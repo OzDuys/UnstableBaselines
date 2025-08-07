@@ -12,22 +12,60 @@ from unstable.utils.logging import setup_logger
 @ray.remote
 class VLLMActor:
     def __init__(self, cfg: Dict[str, Any], tracker, name: str):
-        self.logger = setup_logger(f"actor-{name}", ray.get(tracker.get_log_dir.remote())) # set up logging
+        self.logger = setup_logger(f"actor-{name}", ray.get(tracker.get_log_dir.remote()))
         self.gpu_ids = ray.get_gpu_ids()
         os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, self.gpu_ids))
         
+        # --- START: REVISED ENGINEARGS INITIALIZATION ---
+
+        # 1. Create a copy of the config to safely modify it
+        engine_args_dict = cfg.copy()
+        
+        # 2. Handle renamed/legacy parameters for backward compatibility
+        if "max_parallel_seq" in engine_args_dict and "max_num_seqs" not in engine_args_dict:
+            self.logger.info(f"Mapping legacy parameter 'max_parallel_seq' ({engine_args_dict['max_parallel_seq']}) to 'max_num_seqs'.")
+            engine_args_dict["max_num_seqs"] = engine_args_dict.pop("max_parallel_seq")
+        
+        # 3. Extract parameters that are NOT part of EngineArgs
+        # These are used for SamplingParams later, not engine creation.
+        sampling_temp = engine_args_dict.pop("temperature", 0.7)
+        sampling_top_p = engine_args_dict.pop("top_p", 0.95)
+        sampling_max_tokens = engine_args_dict.pop("max_tokens", 4096)
+        
+        # We also need to handle the nested lora_config dict
+        lora_config = engine_args_dict.pop("lora_config", {})
+        lora_rank = lora_config.get("lora_rank", 32) # Default if not found
+
+        # 4. Initialize EngineArgs by unpacking the cleaned dictionary
+        # This will automatically pass gpu_memory_utilization, max_num_batched_tokens, etc.
+        self.logger.info(f"Initializing VLLM Engine with args: {engine_args_dict}")
         engine_args = EngineArgs(
-            model=cfg["model_name"], enable_lora=True, max_loras=cfg["max_loras"], max_lora_rank=cfg["lora_config"]["lora_rank"], 
-            max_cpu_loras=cfg["max_loras"], max_num_seqs=cfg["max_parallel_seq"], task="generate", max_model_len=cfg["max_model_len"],
-            disable_custom_all_reduce=True, enforce_eager=False, disable_log_stats=True,  # Reduce logging overhead
+            enable_lora=True,
+            max_lora_rank=lora_rank,
+            # Add other static/required args here if necessary
+            **engine_args_dict 
         )
-        try: self.engine = LLMEngine.from_engine_args(engine_args); self.logger.info("VLLM engine initialized successfully")
-        except Exception as e: self.logger.error(f"VLLM engine initialization failed: {e}"); raise
+
+        try:
+            self.engine = LLMEngine.from_engine_args(engine_args)
+            self.logger.info("VLLM engine initialized successfully")
+        except Exception as e:
+            self.logger.error(f"VLLM engine initialization failed: {e}")
+            raise
+
+        # --- END: REVISED ENGINEARGS INITIALIZATION ---
+
         self.logger.info(f"vLLM model path or name: {engine_args.model}")
         self.logger.info(f"Model architecture: {self.engine.model_config.__dict__}")
             
-        self.sampling_params = SamplingParams(temperature=cfg.get("temperature", 0.7), top_p=cfg.get("top_p", 0.95), max_tokens=cfg.get("max_tokens", 4096))
+        # Use the parameters we extracted earlier
+        self.sampling_params = SamplingParams(
+            temperature=sampling_temp, 
+            top_p=sampling_top_p, 
+            max_tokens=sampling_max_tokens
+        )
 
+        # The rest of your __init__ method remains the same...
         self._queue = deque()
         self._futures = {}
         self._next_id = 0
@@ -44,7 +82,7 @@ class VLLMActor:
         self._report_task = asyncio.create_task(self._report_loop())
         self._lora_ids: Dict[str, int] = {"base": 0}
         self._next_lora_id = 1
-        self._last_step_time = time.monotonic()  # Add health check flag
+        self._last_step_time = time.monotonic()
 
     async def submit_prompt(self, prompt: str, lora_path: Optional[str] = None) -> str:
         if lora_path is not None and not isinstance(lora_path, str): lora_path = str(lora_path)
