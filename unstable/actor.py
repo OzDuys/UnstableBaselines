@@ -25,6 +25,10 @@ class VLLMActor:
         if "max_parallel_seq" in engine_args_dict and "max_num_seqs" not in engine_args_dict:
             self.logger.info(f"Mapping legacy parameter 'max_parallel_seq' ({engine_args_dict['max_parallel_seq']}) to 'max_num_seqs'.")
             engine_args_dict["max_num_seqs"] = engine_args_dict.pop("max_parallel_seq")
+        # vLLM EngineArgs expects 'model', some configs use 'model_name'
+        if "model_name" in engine_args_dict and "model" not in engine_args_dict:
+            self.logger.info(f"Mapping legacy parameter 'model_name' ({engine_args_dict['model_name']}) to 'model'.")
+            engine_args_dict["model"] = engine_args_dict.pop("model_name")
         
         # 3. Extract parameters that are NOT part of EngineArgs
         # These are used for SamplingParams later, not engine creation.
