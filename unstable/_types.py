@@ -58,6 +58,7 @@ class GameSpec:
     agent_specs: List[AgentSpec]
     eval_model_pid: Optional[int] = None
     eval_opponent_name: Optional[str] = None
+    env_kwargs: Dict[str, Any] = field(default_factory=dict)  # propagated env kwargs for environment construction
 
 
 @dataclass
@@ -73,6 +74,7 @@ class TrainEnvSpec:
     num_actors: int
     prompt_template: str 
     action_extraction_fn: str = "default"
+    env_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass 
 class EvalEnvSpec:
@@ -82,6 +84,7 @@ class EvalEnvSpec:
     action_extraction_fn: str = "default"
     fixed_opponent: str = "google/gemini-2.0-flash-lite-001"
     # forced_pid: Optional[List] = None # whether to force a specific pid for the collection models
+    env_kwargs: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

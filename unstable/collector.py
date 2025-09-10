@@ -59,7 +59,8 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
             "is_openrouter": is_openrouter,
         }
 
-    env = ta.make(game_spec.env_id)
+    # Instantiate environment with any propagated constructor kwargs (e.g. communication_turns override)
+    env = ta.make(game_spec.env_id, **getattr(game_spec, "env_kwargs", {}))
     env.reset(num_players=len(agents), seed=game_spec.seed)
     env.state.error_allowance = 0
     turn = 0

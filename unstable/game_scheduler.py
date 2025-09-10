@@ -41,7 +41,13 @@ class GameScheduler:
                         action_extraction_fn=env_spec.action_extraction_fn,
                     ))
                     self._running_jobs[self._game_idx]["models"].append({"uid": opp_uid, "pid": pid, "type": "opponent"})
-            game_spec = GameSpec(game_idx=self._game_idx, env_id=env_spec.env_id, seed=self._game_idx, agent_specs=agent_specs) # populate GameSpec
+            game_spec = GameSpec(
+                game_idx=self._game_idx,
+                env_id=env_spec.env_id,
+                seed=self._game_idx,
+                agent_specs=agent_specs,
+                env_kwargs=getattr(env_spec, "env_kwargs", {}),
+            )  # populate GameSpec with propagated env kwargs
             self._game_idx += 1
             return game_spec
         except Exception as exc:
@@ -74,7 +80,15 @@ class GameScheduler:
                         prompt_template=env_spec.prompt_template,
                         action_extraction_fn=env_spec.action_extraction_fn,
                     ))
-            game_spec = GameSpec(game_idx=self._game_idx, env_id=env_spec.env_id, seed=self._game_idx, agent_specs=agent_specs, eval_model_pid=pids[0], eval_opponent_name=env_spec.fixed_opponent) # populate GameSpec
+            game_spec = GameSpec(
+                game_idx=self._game_idx,
+                env_id=env_spec.env_id,
+                seed=self._game_idx,
+                agent_specs=agent_specs,
+                eval_model_pid=pids[0],
+                eval_opponent_name=env_spec.fixed_opponent,
+                env_kwargs=getattr(env_spec, "env_kwargs", {}),
+            )  # populate GameSpec with env kwargs
             return game_spec
         except Exception as exc:
             self.logger.info(f"Exception in 'next_eval_job': {exc}")
