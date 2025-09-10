@@ -11,6 +11,9 @@ class BaseEnvSampler:
     def env_list(self) -> str: return ",".join([tes.env_id for tes in self._train])
     def sample(self, kind: str = "train") -> TrainEnvSpec | EvalEnvSpec: ...
     def update(self, avg_actor_reward: float, avg_opponent_reward: float|None) -> None: ...
+    # Accessors for config logging (avoid touching private attrs elsewhere)
+    def get_train_specs(self) -> List[TrainEnvSpec]: return list(self._train)
+    def get_eval_specs(self) -> List[EvalEnvSpec]: return list(self._eval) if self._eval else []
 
 class UniformRandomEnvSampler(BaseEnvSampler):
     def sample(self, kind: str = "train") -> TrainEnvSpec | EvalEnvSpec:

@@ -30,16 +30,40 @@ class BaseTracker:
 @ray.remote
 class Tracker(BaseTracker): 
     FLUSH_EVERY = 64
-    def __init__(self, run_name: str, wandb_project: Optional[str]=None):
+    def __init__(self, run_name: str, wandb_project: Optional[str]=None, config: Optional[Dict]=None, wandb_entity: Optional[str]=None):
+        """Tracker actor responsible for aggregating metrics and (optionally) logging to Weights & Biases.
+
+        Args:
+            run_name: Human readable run identifier.
+            wandb_project: If provided, enables W&B logging to this project.
+            config: Optional configuration dictionary to store in W&B (hyperparameters, env specs, etc.).
+            wandb_entity: Optional W&B entity/organization.
+        """
         super().__init__(run_name=run_name)
         self.logger = setup_logger("tracker", self.get_log_dir())
         self.use_wandb = False
-        if wandb_project: wandb.init(project=wandb_project, name=run_name); self.use_wandb = True; wandb.define_metric("*", step_metric="learner/step")
+        if wandb_project:
+            try:
+                wandb.init(project=wandb_project, entity=wandb_entity, name=run_name, config=config, settings=wandb.Settings(start_method="thread"))
+                wandb.define_metric("*", step_metric="learner/step")
+                self.use_wandb = True
+                self.logger.info("W&B run initialised with config keys: %s", list((config or {}).keys()))
+            except Exception as e:
+                self.logger.warning(f"Failed to initialise W&B run: {e}")
         self._m: Dict[str, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=512))
         self._buffer: Dict[str, Scalar] = {}
         self._n = {}
         self._last_flush = time.monotonic()
         self._interface_stats = {"gpu_tok_s": {}, "TS": {}, "exploration": {}, "match_counts": {}, "format_success": None, "inv_move_rate": None, "game_len": None}
+
+    def update_config(self, cfg: Dict, allow_val_change: bool=True):
+        """Update the W&B config after initialisation (safe for Ray remote call)."""
+        if self.use_wandb:
+            try:
+                wandb.config.update(cfg, allow_val_change=allow_val_change)
+                self.logger.info("Updated W&B config with keys: %s", list(cfg.keys()))
+            except Exception as e:
+                self.logger.warning(f"wandb.config.update failed: {e}")
 
     def _put(self, k: str, v: Scalar): self._m[k].append(v)
     def _agg(self, p: str) -> dict[str, Scalar]: return {k: float(np.mean(dq)) for k, dq in self._m.items() if k.startswith(p)}
