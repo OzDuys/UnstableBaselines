@@ -22,10 +22,24 @@ class GameScheduler:
             for i, pid in enumerate(pids):
                 if i < env_spec.num_actors: # add current ckpt
                     self._running_jobs[self._game_idx]["models"].append({"uid": current_ckpt_uid, "pid": pid, "type": "model"})
-                    agent_specs.append(AgentSpec(pid=pid, kind="checkpoint", collect_data=True, lora_path=current_ckpt_lora_path, prompt_template=env_spec.prompt_template, action_extraction_fn=env_spec.action_extraction_fn))
-                else: # sample opponent and add
+                    agent_specs.append(AgentSpec(
+                        pid=pid,
+                        kind="checkpoint",
+                        collect_data=True,
+                        lora_path=current_ckpt_lora_path,
+                        prompt_template=env_spec.prompt_template,
+                        action_extraction_fn=env_spec.action_extraction_fn,
+                    ))
+                else: # sample opponent and add (ensure extraction + prompt info propagated)
                     opp_uid, kind, opp_lora_path, opp_openrouter_name = self.model_sampler.sample_opponent()
-                    agent_specs.append(AgentSpec(pid=pid, kind=kind, lora_path=opp_lora_path, openrouter_name=opp_openrouter_name)) # TODO might have to adjust what is passed
+                    agent_specs.append(AgentSpec(
+                        pid=pid,
+                        kind=kind,
+                        lora_path=opp_lora_path,
+                        openrouter_name=opp_openrouter_name,
+                        prompt_template=env_spec.prompt_template,
+                        action_extraction_fn=env_spec.action_extraction_fn,
+                    ))
                     self._running_jobs[self._game_idx]["models"].append({"uid": opp_uid, "pid": pid, "type": "opponent"})
             game_spec = GameSpec(game_idx=self._game_idx, env_id=env_spec.env_id, seed=self._game_idx, agent_specs=agent_specs) # populate GameSpec
             self._game_idx += 1
@@ -42,8 +56,24 @@ class GameScheduler:
             pids = list(range(env_spec.num_players))
             random.shuffle(pids); agent_specs = []
             for i, pid in enumerate(pids):
-                if i == 0:  agent_specs.append(AgentSpec(pid=pid, kind="checkpoint", collect_data=True, lora_path=current_ckpt_lora_path, prompt_template=env_spec.prompt_template, action_extraction_fn=env_spec.action_extraction_fn)) # only one actor, rest fixed
-                else:       agent_specs.append(AgentSpec(pid=pid, kind="openrouter", lora_path=None, openrouter_name=env_spec.fixed_opponent)) # sample opponent and add
+                if i == 0:  # learner / checkpoint
+                    agent_specs.append(AgentSpec(
+                        pid=pid,
+                        kind="checkpoint",
+                        collect_data=True,
+                        lora_path=current_ckpt_lora_path,
+                        prompt_template=env_spec.prompt_template,
+                        action_extraction_fn=env_spec.action_extraction_fn,
+                    ))
+                else:       # fixed opponent via OpenRouter (still need extraction)
+                    agent_specs.append(AgentSpec(
+                        pid=pid,
+                        kind="openrouter",
+                        lora_path=None,
+                        openrouter_name=env_spec.fixed_opponent,
+                        prompt_template=env_spec.prompt_template,
+                        action_extraction_fn=env_spec.action_extraction_fn,
+                    ))
             game_spec = GameSpec(game_idx=self._game_idx, env_id=env_spec.env_id, seed=self._game_idx, agent_specs=agent_specs, eval_model_pid=pids[0], eval_opponent_name=env_spec.fixed_opponent) # populate GameSpec
             return game_spec
         except Exception as exc:

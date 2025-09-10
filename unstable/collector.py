@@ -33,33 +33,84 @@ class CallableActorWrapper:
 
 @ray.remote(num_cpus=0)
 def run_game(game_spec: GameSpec, actor: VLLMActor):
+    """Run a single game and return aggregated information.
+
+    Change: Apply action extraction to OpenRouter opponents too so their
+    outputs (e.g. Gemini) are parsed for [action] or \boxed{action} formats.
+    """
     game_information = GameInformation(game_idx=game_spec.game_idx, eval_model_pid=game_spec.eval_model_pid, eval_opponent_name=game_spec.eval_opponent_name)
-    agents = {agent_spec.pid: {
-        "traj": PlayerTrajectory(pid=agent_spec.pid) if agent_spec.collect_data else None, 
-        "name": agent_spec.lora_path if agent_spec.lora_path else agent_spec.openrouter_name,
-        "model": CallableActorWrapper(actor=actor, lora_path=agent_spec.lora_path, obs_fmt_fn=OBSERVATION_FORMATTING[agent_spec.prompt_template], extract_fn=ACTION_EXTRACTION[agent_spec.action_extraction_fn]) if agent_spec.openrouter_name==None else ta.agents.OpenRouterAgent(agent_spec.openrouter_name)
-    } for agent_spec in game_spec.agent_specs} # build agents
-    env=ta.make(game_spec.env_id); env.reset(num_players=len(agents), seed=game_spec.seed); env.state.error_allowance=0; turn=0
+
+    agents = {}
+    for agent_spec in game_spec.agent_specs:
+        is_openrouter = agent_spec.openrouter_name is not None
+        model_obj = (
+            CallableActorWrapper(
+                actor=actor,
+                lora_path=agent_spec.lora_path,
+                obs_fmt_fn=OBSERVATION_FORMATTING[agent_spec.prompt_template],
+                extract_fn=ACTION_EXTRACTION[agent_spec.action_extraction_fn],
+            ) if not is_openrouter else ta.agents.OpenRouterAgent(agent_spec.openrouter_name)
+        )
+        agents[agent_spec.pid] = {
+            "traj": PlayerTrajectory(pid=agent_spec.pid) if agent_spec.collect_data else None,
+            "name": agent_spec.lora_path if agent_spec.lora_path else agent_spec.openrouter_name,
+            "model": model_obj,
+            "extract_fn": ACTION_EXTRACTION[agent_spec.action_extraction_fn],
+            "is_openrouter": is_openrouter,
+        }
+
+    env = ta.make(game_spec.env_id)
+    env.reset(num_players=len(agents), seed=game_spec.seed)
+    env.state.error_allowance = 0
+    turn = 0
+
     while True:
         pid, obs = env.get_observation()
-        # get model (or opponent) action
-        if agents[pid]["traj"] == None: raw = extracted = agents[pid]["model"](obs) # fix opponent
-        else: raw, extracted, prompt, format_feedback = agents[pid]["model"].act_full(obs)
-        done, step_info = env.step(extracted); turn+= 1 # execute the action & increment turn counter
-        # general tracking
-        game_information.pid.append(pid); game_information.obs.append(obs); game_information.full_actions.append(raw)
-        game_information.extracted_actions.append(extracted); game_information.step_infos.append(step_info); game_information.names[pid] = agents[pid]["name"]
-        # player specific trackering
-        if agents[pid]["traj"] != None:
-            agents[pid]["traj"].obs.append(obs); agents[pid]["traj"].actions.append(raw); agents[pid]["traj"].extracted_actions.append(extracted)
-            format_feedback["invalid_move"] = False; agents[pid]["traj"].format_feedbacks.append(format_feedback); agents[pid]["traj"].step_infos.append(step_info)
-        if done: break
+        agent_entry = agents[pid]
+        if agent_entry["is_openrouter"]:  # opponent via OpenRouter API
+            raw = agent_entry["model"](obs)
+            extracted, format_feedback = agent_entry["extract_fn"](raw)
+        else:  # local checkpointed model (already does extraction internally)
+            raw, extracted, prompt, format_feedback = agent_entry["model"].act_full(obs)
+
+        done, step_info = env.step(extracted)
+        turn += 1
+
+        # General tracking
+        game_information.pid.append(pid)
+        game_information.obs.append(obs)
+        game_information.full_actions.append(raw)
+        game_information.extracted_actions.append(extracted)
+        game_information.step_infos.append(step_info)
+        game_information.names[pid] = agent_entry["name"]
+
+        # Player specific tracking (only for learning / data-collecting agents)
+        if agent_entry["traj"] is not None:
+            traj = agent_entry["traj"]
+            traj.obs.append(obs)
+            traj.actions.append(raw)
+            traj.extracted_actions.append(extracted)
+            format_feedback["invalid_move"] = False
+            traj.format_feedbacks.append(format_feedback)
+            traj.step_infos.append(step_info)
+
+        if done:
+            break
+
     final_rewards, game_info = env.close()
-    for pid in agents.keys():
-        if agents[pid]["traj"]!=None: agents[pid]["traj"].final_reward=final_rewards[pid]; agents[pid]["traj"].game_info=game_info[pid]; agents[pid]["traj"].num_turns=turn
-        if game_info[pid]["invalid_move"] and agents[pid]["traj"]!=None: agents[pid]["traj"].format_feedbacks[-1]["invalid_move"]=True
-    game_information.final_rewards=final_rewards; game_information.num_turns=turn; game_information.game_info=game_info
-    return game_information, [agents[pid]["traj"] for pid in agents.keys() if agents[pid]["traj"]!=None]
+    for pid, agent_entry in agents.items():
+        if agent_entry["traj"] is not None:
+            traj = agent_entry["traj"]
+            traj.final_reward = final_rewards[pid]
+            traj.game_info = game_info[pid]
+            traj.num_turns = turn
+            if game_info[pid]["invalid_move"]:
+                traj.format_feedbacks[-1]["invalid_move"] = True
+
+    game_information.final_rewards = final_rewards
+    game_information.num_turns = turn
+    game_information.game_info = game_info
+    return game_information, [agents[pid]["traj"] for pid in agents if agents[pid]["traj"] is not None]
 
 
 @ray.remote
