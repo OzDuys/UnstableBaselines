@@ -49,7 +49,7 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
                 lora_path=agent_spec.lora_path,
                 obs_fmt_fn=OBSERVATION_FORMATTING[agent_spec.prompt_template],
                 extract_fn=ACTION_EXTRACTION[agent_spec.action_extraction_fn],
-            ) if not is_openrouter else ta.agents.OpenRouterAgent(agent_spec.openrouter_name)
+            ) if not is_openrouter else ta.agents.OpenRouterAgent(agent_spec.openrouter_name, system_prompt="")  # override STANDARD_GAME_PROMPT
         )
         agents[agent_spec.pid] = {
             "traj": PlayerTrajectory(pid=agent_spec.pid) if agent_spec.collect_data else None,
@@ -68,8 +68,9 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
     while True:
         pid, obs = env.get_observation()
         agent_entry = agents[pid]
-        if agent_entry["is_openrouter"]:  # opponent via OpenRouter API
-            raw = agent_entry["model"](obs)
+        if agent_entry["is_openrouter"]:  # opponent via OpenRouter API, format with default template
+            formatted_obs = OBSERVATION_FORMATTING["default"](observation=obs)
+            raw = agent_entry["model"](formatted_obs)
             extracted, format_feedback = agent_entry["extract_fn"](raw)
         else:  # local checkpointed model (already does extraction internally)
             raw, extracted, prompt, format_feedback = agent_entry["model"].act_full(obs)
