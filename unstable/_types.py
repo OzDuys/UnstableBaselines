@@ -17,6 +17,7 @@ class PlayerTrajectory:
     pid:                int = field(default_factory=int)
     final_reward:       float = field(default_factory=float)
     obs:                List[str] = field(default_factory=list)
+    prompts:            List[str] = field(default_factory=list)  # full prompts shown to the model
     actions:            List[str] = field(default_factory=list)
     extracted_actions:  List[str] = field(default_factory=list)
     format_feedbacks:   List[Dict] = field(default_factory=list)
@@ -30,6 +31,7 @@ class GameInformation:
     game_idx:           int = field(default_factory=int)
     pid:                List[int] = field(default_factory=list)
     obs:                List[str] = field(default_factory=list)
+    prompts:            List[str] = field(default_factory=list)  # full prompts (mirrors turns)
     full_actions:       List[str] = field(default_factory=list)
     extracted_actions:  List[str] = field(default_factory=list)
     step_infos:         List[Dict] = field(default_factory=list)

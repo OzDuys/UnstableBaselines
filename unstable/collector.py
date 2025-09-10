@@ -69,8 +69,8 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
         pid, obs = env.get_observation()
         agent_entry = agents[pid]
         if agent_entry["is_openrouter"]:  # opponent via OpenRouter API, format with default template
-            formatted_obs = OBSERVATION_FORMATTING["default"](observation=obs)
-            raw = agent_entry["model"](formatted_obs)
+            prompt = OBSERVATION_FORMATTING["default"](observation=obs)
+            raw = agent_entry["model"](prompt)
             extracted, format_feedback = agent_entry["extract_fn"](raw)
         else:  # local checkpointed model (already does extraction internally)
             raw, extracted, prompt, format_feedback = agent_entry["model"].act_full(obs)
@@ -85,11 +85,13 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
         game_information.extracted_actions.append(extracted)
         game_information.step_infos.append(step_info)
         game_information.names[pid] = agent_entry["name"]
+        game_information.prompts.append(prompt)
 
         # Player specific tracking (only for learning / data-collecting agents)
         if agent_entry["traj"] is not None:
             traj = agent_entry["traj"]
             traj.obs.append(obs)
+            traj.prompts.append(prompt)
             traj.actions.append(raw)
             traj.extracted_actions.append(extracted)
             format_feedback["invalid_move"] = False
