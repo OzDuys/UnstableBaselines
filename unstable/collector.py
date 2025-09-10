@@ -159,7 +159,11 @@ class Collector:
         self._post_train(meta, game_information, player_trajs) if meta.type=="train" else self._post_eval(meta, game_information)
     
     def _post_train(self, meta: TaskMeta, game_information: GameInformation, player_trajs: List[PlayerTrajectory]):
-        for traj in player_trajs: self.buffer.add_player_trajectory.remote(traj, env_id=meta.env_id); self.tracker.add_player_trajectory.remote(traj, env_id=meta.env_id)
+        for traj in player_trajs:
+            self.buffer.add_player_trajectory.remote(traj, env_id=meta.env_id)
+            self.tracker.add_player_trajectory.remote(traj, env_id=meta.env_id)
+        # write per-game CSV for training
+        self.tracker.add_train_game_information.remote(game_information=game_information, env_id=meta.env_id)
         self.game_scheduler.update.remote(game_info=game_information)
 
     def _post_eval(self, meta: TaskMeta, game_information: GameInformation):

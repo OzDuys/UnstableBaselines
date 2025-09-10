@@ -112,6 +112,20 @@ class Tracker(BaseTracker):
         except Exception as exc:
             self.logger.info(f"Exception when adding game_info to tracker: {exc}")
 
+    def add_train_game_information(self, game_information: GameInformation, env_id: str):
+        """Write a per-game CSV for a training game (mirrors eval format)."""
+        try:
+            train_reward_sum = sum([game_information.final_rewards.get(pid, 0.0) for pid in set(game_information.pid)])
+            _prefix = f"training-{env_id}"
+            self._put(f"{_prefix}/Total Reward", train_reward_sum)
+            self._n[_prefix] = self._n.get(_prefix, 0) + 1
+            self._put(f"{_prefix}/step", self._n[_prefix])
+            self._buffer.update(self._agg('training-')); self._flush_if_due()
+            # store per-turn data
+            write_game_information_to_file(game_info=game_information, filename=os.path.join(self.get_train_dir(), f"{env_id}-{game_information.game_idx}.csv"))
+        except Exception as exc:
+            self.logger.info(f"Exception when adding training game_info to tracker: {exc}")
+
     def log_model_registry(self, ts_dict: dict[str, dict[str, float]], match_counts: dict[tuple[str, str], int]):
         self._interface_stats.update({"TS": ts_dict, "exploration": None, "match_counts": match_counts})
 
