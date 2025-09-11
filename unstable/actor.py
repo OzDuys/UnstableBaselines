@@ -88,11 +88,12 @@ class VLLMActor:
         self._next_lora_id = 1
         self._last_step_time = time.monotonic()
 
-    async def submit_prompt(self, prompt: str, lora_path: Optional[str] = None) -> str:
+    async def submit_prompt(self, prompt: str, lora_path: Optional[str] = None, max_tokens_override: Optional[int] = None) -> str:
         if lora_path is not None and not isinstance(lora_path, str): lora_path = str(lora_path)
         fut = asyncio.Future()
         self._queued += 1
-        self._queue.append((prompt, lora_path, fut))
+        # queue includes optional per-request max token override
+        self._queue.append((prompt, lora_path, max_tokens_override, fut))
         return await fut
 
     async def _batch_loop(self):
@@ -102,7 +103,7 @@ class VLLMActor:
                 if time.monotonic() - self._last_step_time > 30: 
                     self.logger.error(f"Potential deadlock detected - no engine steps for {time.monotonic() - self._last_step_time:.1f} seconds\nRunning requests: {dict(self._running)}\nQueue size: {len(self._queue)}") # 30 second deadlock detection
                 while self._queue:
-                    prompt, path, fut = self._queue.popleft()
+                    prompt, path, max_override, fut = self._queue.popleft()
                     lora = path or "base"
                     req_id = str(self._next_id); self._next_id += 1
                     self._futures[req_id] = fut
@@ -117,7 +118,13 @@ class VLLMActor:
                         lora_req = LoRARequest(path, self._lora_ids[path], path)
                     else:
                         lora_req = None
-                    try: self.engine.add_request(req_id, prompt, self.sampling_params, lora_request=lora_req)
+                    # Apply explicit per-call override if provided; else use default sampling params
+                    sp = self.sampling_params if (max_override is None) else SamplingParams(
+                        temperature=self.sampling_params.temperature,
+                        top_p=self.sampling_params.top_p,
+                        max_tokens=int(max_override),
+                    )
+                    try: self.engine.add_request(req_id, prompt, sp, lora_request=lora_req)
                     except Exception as e:
                         self.logger.error(f"Failed to add request {req_id}: {e}")
                         self._running -= 1

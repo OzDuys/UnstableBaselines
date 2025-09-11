@@ -18,8 +18,9 @@ from unstable.utils.templates import ACTION_EXTRACTION, OBSERVATION_FORMATTING
 
 
 class CallableActorWrapper:
-    def __init__(self, actor: VLLMActor, lora_path: str|Path, obs_fmt_fn: Callable[[str],str], extract_fn: Callable[[str], Tuple[str, Dict[str, Any]]]) -> None:
+    def __init__(self, actor: VLLMActor, lora_path: str|Path, obs_fmt_fn: Callable[[str],str], extract_fn: Callable[[str], Tuple[str, Dict[str, Any]]], conversation_max_tokens: Optional[int] = None) -> None:
         self._actor, self._lora, self._fmt, self._extract = actor, lora_path, obs_fmt_fn, extract_fn
+        self._conv_max = conversation_max_tokens
 
     def __call__(self, observation: str) -> str: 
         _, extracted, _, _ = self.act_full(observation)
@@ -27,7 +28,11 @@ class CallableActorWrapper:
 
     def act_full(self, observation: str) -> Tuple[str, str, str, dict]:
         prompt = self._fmt(observation=observation)
-        raw = ray.get(self._actor.submit_prompt.remote(prompt=prompt, lora_path=self._lora))
+        # If this is a conversation turn and a cap is configured, apply per-call override.
+        lower = (observation or "").lower()
+        is_convo = ("converse freely" in lower) or ("free-chat" in lower) or ("free chat" in lower)
+        max_override = self._conv_max if (self._conv_max is not None and is_convo) else None
+        raw = ray.get(self._actor.submit_prompt.remote(prompt=prompt, lora_path=self._lora, max_tokens_override=max_override))
         extracted, format_feedback = self._extract(raw_action=raw)
         return raw, extracted, prompt, format_feedback
 
@@ -40,6 +45,10 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
     """
     game_information = GameInformation(game_idx=game_spec.game_idx, eval_model_pid=game_spec.eval_model_pid, eval_opponent_name=game_spec.eval_opponent_name)
 
+    # Extract optional per-env conversation cap for use in actor wrapper
+    _env_kwargs = dict(getattr(game_spec, "env_kwargs", {}))
+    conversation_max_tokens = _env_kwargs.get("conversation_max_tokens")
+
     agents = {}
     for agent_spec in game_spec.agent_specs:
         is_openrouter = agent_spec.openrouter_name is not None
@@ -49,6 +58,7 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
                 lora_path=agent_spec.lora_path,
                 obs_fmt_fn=OBSERVATION_FORMATTING[agent_spec.prompt_template],
                 extract_fn=ACTION_EXTRACTION[agent_spec.action_extraction_fn],
+                conversation_max_tokens=conversation_max_tokens,
             ) if not is_openrouter else ta.agents.OpenRouterAgent(agent_spec.openrouter_name, system_prompt="")  # override STANDARD_GAME_PROMPT
         )
         agents[agent_spec.pid] = {
@@ -60,7 +70,9 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
         }
 
     # Instantiate environment with any propagated constructor kwargs (e.g. communication_turns override)
-    env = ta.make(game_spec.env_id, **getattr(game_spec, "env_kwargs", {}))
+    _ek = dict(getattr(game_spec, "env_kwargs", {}))
+    _ek.pop("conversation_max_tokens", None)  # strip our custom key
+    env = ta.make(game_spec.env_id, **_ek)
     env.reset(num_players=len(agents), seed=game_spec.seed)
     env.state.error_allowance = 0
     turn = 0

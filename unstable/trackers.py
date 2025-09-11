@@ -1,4 +1,5 @@
 import os, re, ray, time, wandb, collections, datetime, logging, numpy as np
+import pandas as pd
 from typing import Optional, Union, Dict
 from unstable.utils import setup_logger
 
@@ -104,10 +105,40 @@ class Tracker(BaseTracker):
             self._put(f"{_prefix}/Draw Rate", int(eval_reward==0))
             self._n[_prefix] = self._n.get(_prefix, 0) + 1
             self._put(f"{_prefix}/step", self._n[_prefix])
-            self._buffer.update(self._agg('evaluation-')); self._flush_if_due()
+            # Build per-turn dataframe to ensure stable, quoted CSV with preserved newlines
+            rows = []
+            num_steps = len(getattr(game_information, "obs", []))
+            for i in range(num_steps):
+                pid = game_information.pid[i] if i < len(game_information.pid) else None
+                name = game_information.names.get(pid) if hasattr(game_information, "names") else None
+                obs = game_information.obs[i] if i < len(game_information.obs) else None
+                raw = game_information.full_actions[i] if i < len(game_information.full_actions) else None
+                extracted = game_information.extracted_actions[i] if i < len(game_information.extracted_actions) else None
+                prompt = game_information.prompts[i] if i < len(getattr(game_information, "prompts", [])) else None
+                ptxt = prompt or ""
+                plen_char = len(ptxt)
+                plen_ws = len(ptxt.split())
+                # Log prompt length metrics as aggregates
+                self._put(f"{_prefix}/Prompt Length (char)", plen_char)
+                self._put(f"{_prefix}/Prompt Length (ws_tok)", plen_ws)
+                rows.append({
+                    "step": i,
+                    "pid": pid,
+                    "name": name,
+                    "observation": obs,
+                    "raw_action": raw,
+                    "extracted_action": extracted,
+                    "prompt": prompt,
+                    "prompt_len_char": plen_char,
+                    "prompt_len_ws_tokens": plen_ws,
+                })
 
-            # try storing the eval info to file
-            write_game_information_to_file(game_info=game_information, filename=os.path.join(self.get_eval_dir(), f"{env_id}-{game_information.game_idx}.csv"))
+            df = pd.DataFrame(rows)
+            out_path = os.path.join(self.get_eval_dir(), f"{env_id}-{game_information.game_idx}.csv")
+            # Write once, atomically, preserving newlines inside cells
+            df.to_csv(out_path, index=False, lineterminator='\n')
+
+            self._buffer.update(self._agg('evaluation-')); self._flush_if_due()
 
         except Exception as exc:
             self.logger.info(f"Exception when adding game_info to tracker: {exc}")
@@ -120,9 +151,38 @@ class Tracker(BaseTracker):
             self._put(f"{_prefix}/Total Reward", train_reward_sum)
             self._n[_prefix] = self._n.get(_prefix, 0) + 1
             self._put(f"{_prefix}/step", self._n[_prefix])
+            # Build per-turn dataframe and include prompt lengths
+            rows = []
+            num_steps = len(getattr(game_information, "obs", []))
+            for i in range(num_steps):
+                pid = game_information.pid[i] if i < len(game_information.pid) else None
+                name = game_information.names.get(pid) if hasattr(game_information, "names") else None
+                obs = game_information.obs[i] if i < len(game_information.obs) else None
+                raw = game_information.full_actions[i] if i < len(game_information.full_actions) else None
+                extracted = game_information.extracted_actions[i] if i < len(game_information.extracted_actions) else None
+                prompt = game_information.prompts[i] if i < len(getattr(game_information, "prompts", [])) else None
+                ptxt = prompt or ""
+                plen_char = len(ptxt)
+                plen_ws = len(ptxt.split())
+                self._put(f"{_prefix}/Prompt Length (char)", plen_char)
+                self._put(f"{_prefix}/Prompt Length (ws_tok)", plen_ws)
+                rows.append({
+                    "step": i,
+                    "pid": pid,
+                    "name": name,
+                    "observation": obs,
+                    "raw_action": raw,
+                    "extracted_action": extracted,
+                    "prompt": prompt,
+                    "prompt_len_char": plen_char,
+                    "prompt_len_ws_tokens": plen_ws,
+                })
+
+            df = pd.DataFrame(rows)
+            out_path = os.path.join(self.get_train_dir(), f"{env_id}-{game_information.game_idx}.csv")
+            df.to_csv(out_path, index=False, lineterminator='\n')
+
             self._buffer.update(self._agg('training-')); self._flush_if_due()
-            # store per-turn data
-            write_game_information_to_file(game_info=game_information, filename=os.path.join(self.get_train_dir(), f"{env_id}-{game_information.game_idx}.csv"))
         except Exception as exc:
             self.logger.info(f"Exception when adding training game_info to tracker: {exc}")
 
