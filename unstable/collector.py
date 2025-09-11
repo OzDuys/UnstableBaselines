@@ -126,6 +126,11 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
     game_information.final_rewards = final_rewards
     game_information.num_turns = turn
     game_information.game_info = game_info
+    # Populate per-step rewards (currently replicate final reward per acting pid; if shaping added later, update here)
+    try:
+        game_information.step_rewards = [final_rewards.get(p, None) for p in game_information.pid]
+    except Exception:
+        game_information.step_rewards = [None]*len(game_information.pid)
     return game_information, [agents[pid]["traj"] for pid in agents if agents[pid]["traj"] is not None]
 
 

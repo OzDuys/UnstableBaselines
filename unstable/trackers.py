@@ -97,94 +97,149 @@ class Tracker(BaseTracker):
     def add_eval_game_information(self, game_information: GameInformation, env_id: str):
         try:
             eval_reward = game_information.final_rewards.get(game_information.eval_model_pid, 0.0)
-            _prefix = f"evaluation-{env_id}" if not game_information.eval_opponent_name else f"evaluation-{env_id} ({game_information.eval_opponent_name})"
+            _prefix = (
+                f"evaluation-{env_id}" if not game_information.eval_opponent_name
+                else f"evaluation-{env_id} ({game_information.eval_opponent_name})"
+            )
             self._put(f"{_prefix}/Reward", eval_reward)
             self._put(f"{_prefix}/Reward (pid={game_information.eval_model_pid})", eval_reward)
-            self._put(f"{_prefix}/Win Rate",  int(eval_reward>0))
-            self._put(f"{_prefix}/Loss Rate", int(eval_reward<0))
-            self._put(f"{_prefix}/Draw Rate", int(eval_reward==0))
+            self._put(f"{_prefix}/Win Rate", int(eval_reward > 0))
+            self._put(f"{_prefix}/Loss Rate", int(eval_reward < 0))
+            self._put(f"{_prefix}/Draw Rate", int(eval_reward == 0))
             self._n[_prefix] = self._n.get(_prefix, 0) + 1
             self._put(f"{_prefix}/step", self._n[_prefix])
-            # Build per-turn dataframe to ensure stable, quoted CSV with preserved newlines
+
             rows = []
             num_steps = len(getattr(game_information, "obs", []))
             for i in range(num_steps):
                 pid = game_information.pid[i] if i < len(game_information.pid) else None
                 name = game_information.names.get(pid) if hasattr(game_information, "names") else None
                 obs = game_information.obs[i] if i < len(game_information.obs) else None
-                raw = game_information.full_actions[i] if i < len(game_information.full_actions) else None
-                extracted = game_information.extracted_actions[i] if i < len(game_information.extracted_actions) else None
-                prompt = game_information.prompts[i] if i < len(getattr(game_information, "prompts", [])) else None
+                raw = (
+                    game_information.full_actions[i]
+                    if i < len(game_information.full_actions)
+                    else None
+                )
+                extracted = (
+                    game_information.extracted_actions[i]
+                    if i < len(game_information.extracted_actions)
+                    else None
+                )
+                prompt = (
+                    game_information.prompts[i]
+                    if i < len(getattr(game_information, "prompts", []))
+                    else None
+                )
                 ptxt = prompt or ""
                 plen_char = len(ptxt)
                 plen_ws = len(ptxt.split())
-                # Log prompt length metrics as aggregates
                 self._put(f"{_prefix}/Prompt Length (char)", plen_char)
                 self._put(f"{_prefix}/Prompt Length (ws_tok)", plen_ws)
-                rows.append({
-                    "step": i,
-                    "pid": pid,
-                    "name": name,
-                    "observation": obs,
-                    "raw_action": raw,
-                    "extracted_action": extracted,
-                    "prompt": prompt,
-                    "prompt_len_char": plen_char,
-                    "prompt_len_ws_tokens": plen_ws,
-                })
+                rows.append(
+                    {
+                        "step": i,
+                        "pid": pid,
+                        "name": name,
+                        "prompt": prompt,
+                        "raw_action": raw,
+                        "extracted_action": extracted,
+                        "prompt_len_char": plen_char,
+                        "prompt_len_ws_tokens": plen_ws,
+                        "step_reward": (
+                            game_information.step_rewards[i]
+                            if hasattr(game_information, "step_rewards")
+                            and i < len(game_information.step_rewards)
+                            else game_information.final_rewards.get(pid, None)
+                        ),
+                        "final_reward": game_information.final_rewards.get(pid, None),
+                    }
+                )
 
             df = pd.DataFrame(rows)
-            out_path = os.path.join(self.get_eval_dir(), f"{env_id}-{game_information.game_idx}.csv")
-            # Write once, atomically, preserving newlines inside cells
-            df.to_csv(out_path, index=False, lineterminator='\n')
+            out_path = os.path.join(
+                self.get_eval_dir(), f"{env_id}-{game_information.game_idx}.csv"
+            )
+            df.to_csv(out_path, index=False, lineterminator="\n")
 
-            self._buffer.update(self._agg('evaluation-')); self._flush_if_due()
-
-        except Exception as exc:
-            self.logger.info(f"Exception when adding game_info to tracker: {exc}")
+            self._buffer.update(self._agg("evaluation-"))
+            self._flush_if_due()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.info(
+                f"Exception when adding game_info to tracker: {exc}"
+            )
 
     def add_train_game_information(self, game_information: GameInformation, env_id: str):
         """Write a per-game CSV for a training game (mirrors eval format)."""
         try:
-            train_reward_sum = sum([game_information.final_rewards.get(pid, 0.0) for pid in set(game_information.pid)])
+            train_reward_sum = sum(
+                [
+                    game_information.final_rewards.get(pid, 0.0)
+                    for pid in set(game_information.pid)
+                ]
+            )
             _prefix = f"training-{env_id}"
             self._put(f"{_prefix}/Total Reward", train_reward_sum)
             self._n[_prefix] = self._n.get(_prefix, 0) + 1
             self._put(f"{_prefix}/step", self._n[_prefix])
-            # Build per-turn dataframe and include prompt lengths
+
             rows = []
             num_steps = len(getattr(game_information, "obs", []))
             for i in range(num_steps):
                 pid = game_information.pid[i] if i < len(game_information.pid) else None
                 name = game_information.names.get(pid) if hasattr(game_information, "names") else None
                 obs = game_information.obs[i] if i < len(game_information.obs) else None
-                raw = game_information.full_actions[i] if i < len(game_information.full_actions) else None
-                extracted = game_information.extracted_actions[i] if i < len(game_information.extracted_actions) else None
-                prompt = game_information.prompts[i] if i < len(getattr(game_information, "prompts", [])) else None
+                raw = (
+                    game_information.full_actions[i]
+                    if i < len(game_information.full_actions)
+                    else None
+                )
+                extracted = (
+                    game_information.extracted_actions[i]
+                    if i < len(game_information.extracted_actions)
+                    else None
+                )
+                prompt = (
+                    game_information.prompts[i]
+                    if i < len(getattr(game_information, "prompts", []))
+                    else None
+                )
                 ptxt = prompt or ""
                 plen_char = len(ptxt)
                 plen_ws = len(ptxt.split())
                 self._put(f"{_prefix}/Prompt Length (char)", plen_char)
                 self._put(f"{_prefix}/Prompt Length (ws_tok)", plen_ws)
-                rows.append({
-                    "step": i,
-                    "pid": pid,
-                    "name": name,
-                    "observation": obs,
-                    "raw_action": raw,
-                    "extracted_action": extracted,
-                    "prompt": prompt,
-                    "prompt_len_char": plen_char,
-                    "prompt_len_ws_tokens": plen_ws,
-                })
+                rows.append(
+                    {
+                        "step": i,
+                        "pid": pid,
+                        "name": name,
+                        "prompt": prompt,
+                        "raw_action": raw,
+                        "extracted_action": extracted,
+                        "prompt_len_char": plen_char,
+                        "prompt_len_ws_tokens": plen_ws,
+                        "step_reward": (
+                            game_information.step_rewards[i]
+                            if hasattr(game_information, "step_rewards")
+                            and i < len(game_information.step_rewards)
+                            else game_information.final_rewards.get(pid, None)
+                        ),
+                        "final_reward": game_information.final_rewards.get(pid, None),
+                    }
+                )
 
             df = pd.DataFrame(rows)
-            out_path = os.path.join(self.get_train_dir(), f"{env_id}-{game_information.game_idx}.csv")
-            df.to_csv(out_path, index=False, lineterminator='\n')
+            out_path = os.path.join(
+                self.get_train_dir(), f"{env_id}-{game_information.game_idx}.csv"
+            )
+            df.to_csv(out_path, index=False, lineterminator="\n")
 
-            self._buffer.update(self._agg('training-')); self._flush_if_due()
-        except Exception as exc:
-            self.logger.info(f"Exception when adding training game_info to tracker: {exc}")
+            self._buffer.update(self._agg("training-"))
+            self._flush_if_due()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.info(
+                f"Exception when adding training game_info to tracker: {exc}"
+            )
 
     def log_model_registry(self, ts_dict: dict[str, dict[str, float]], match_counts: dict[tuple[str, str], int]):
         self._interface_stats.update({"TS": ts_dict, "exploration": None, "match_counts": match_counts})

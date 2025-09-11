@@ -35,6 +35,8 @@ class GameInformation:
     full_actions:       List[str] = field(default_factory=list)
     extracted_actions:  List[str] = field(default_factory=list)
     step_infos:         List[Dict] = field(default_factory=list)
+    # Per-step reward for the acting player after game end (replicated final reward or shaped value if available)
+    step_rewards:       List[float] = field(default_factory=list)
     game_info:          Dict = field(default_factory=dict)
     final_rewards:      Dict[int, float] = field(default_factory=dict)
     num_turns:          int = field(default_factory=int)
