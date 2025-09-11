@@ -5,7 +5,7 @@ from typing import Tuple, Dict, Callable
 def format_template(system: str = "", user: str = "", assistant: str = "") -> str: return f"{system}{user}{assistant}"
 TEMPLATE_PARTS = {
     "default": {
-        "user": lambda obs: f"\n{obs}\nPlease reason step by step, and put your final answer within \\boxed{{}}.\n"
+        "user": lambda obs: f"\n{obs}\nPlease reason step by step, and put your final response within \\boxed{{}}.\n"
     },
     "qwen3-zs": {
         "user": lambda obs: f"<|im_start|>user\nYou are playing a two-player zero-sum game. Make valid actions to win.\nObservation: {obs}\nPlease reason step by step, and put your final answer within \\boxed{{}}.<|im_end|>\n",
@@ -29,7 +29,7 @@ TEMPLATE_PARTS = {
         "assistant": "<|start_header_id|>assistant<|end_header_id|>"
     },
     "qwen3-custom-generic": {
-        "user": lambda obs: f"<|im_start|>user\n{obs}\nPlease reason step by step, and put your final answer within \\boxed{{}}.<|im_end|>\n",
+        "user": lambda obs: f"<|im_start|>user\n{obs}\nPlease reason step by step, and put your final response within \\boxed{{}}.<|im_end|>\n",
         "assistant": "<|im_start|>assistant\n"
     },
 }
