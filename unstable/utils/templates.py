@@ -103,9 +103,11 @@ def apply_template(template_name: str, observation: str) -> str:
 def extract_action_and_format_feedback(raw_action: str) -> Tuple[str, Dict[str, Any]]:
     """Default extractor that prefers content inside \\boxed{...}.
 
-    Changes:
+    Behaviour:
     - Supports multiline content inside the boxed segment (DOTALL).
-    - Chooses the last non-empty boxed segment as the action (still normalises to []-wrapped).
+    - Chooses the last non-empty boxed segment as the action (no longer auto-wraps with []).
+    - If no \\boxed{...} segment is found (or it is empty), returns an empty string "" to avoid
+      forwarding any unboxed/free-form message to other players.
     - Reports and penalises multiple boxed segments via format_feedback fields.
     """
     # Find all boxed segments, allowing newlines inside
@@ -121,15 +123,17 @@ def extract_action_and_format_feedback(raw_action: str) -> Tuple[str, Dict[str, 
         non_empty = [c for c in boxed_contents if c.strip()]
         chosen = (non_empty[-1] if non_empty else boxed_contents[-1]).strip()
         if chosen:
-            # Ensure brackets are present and keep it on a single line for the action token
+            # Keep it on a single line for the action token; do NOT add surrounding []
             one_line = " ".join(chosen.split())
-            action = one_line if one_line.startswith("[") else f"[{one_line}]"
+            action = one_line
             has_think = True
         else:
-            action = raw_action
+            # Empty boxed => treat as no action
+            action = ""
             has_think = False
     else:
-        action = raw_action
+        # No boxed content => treat as no action
+        action = ""
         has_think = False
 
     # Penalise multiple boxed segments to discourage spamming multiple finals
@@ -143,34 +147,5 @@ def extract_action_and_format_feedback(raw_action: str) -> Tuple[str, Dict[str, 
     return action, format_feedback
 
 
-def extract_bracket_or_boxed(raw_action: str) -> Tuple[str, Dict[str, bool]]:
-        """More permissive extraction.
-
-        Accepts either:
-            1. The last /boxed{...} segment (preferred) and normalises to include square brackets.
-            2. A bare bracketed action like [A15 B5 C0] if no boxed segment found.
-            3. Falls back to the raw_action if neither pattern exists.
-
-        Returns (action, feedback) where feedback includes:
-            - correct_answer_format: bool
-            - matched: "boxed" | "bracket" | "none"
-        """
-        # 1. Try boxed pattern first
-        boxed_matches = re.findall(r"\\boxed\{(.*?)\}", raw_action)
-        if boxed_matches:
-                content = boxed_matches[-1].strip()
-                if content:
-                        # Ensure brackets are present
-                        action = content if content.startswith("[") else f"[{content}]"
-                        return action, {"correct_answer_format": True, "matched": "boxed"}
-        # 2. Fallback to a simple bracketed action (avoid grabbing huge reasoning blocks)
-        bracket_matches = re.findall(r"\[[^\[\]\n]{1,160}\]", raw_action)
-        if bracket_matches:
-                action = bracket_matches[-1].strip()
-                return action, {"correct_answer_format": True, "matched": "bracket"}
-        # 3. Nothing matched
-        return raw_action, {"correct_answer_format": False, "matched": "none"}
-
-
 OBSERVATION_FORMATTING: Dict[str, Callable[[str], str]] = {key: (lambda key=key: lambda observation: apply_template(key, observation))() for key in TEMPLATE_PARTS}
-ACTION_EXTRACTION = {"default": extract_action_and_format_feedback, "bracket-or-boxed": extract_bracket_or_boxed}
+ACTION_EXTRACTION = {"default": extract_action_and_format_feedback}
