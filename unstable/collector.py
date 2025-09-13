@@ -46,10 +46,13 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
     """
     game_information = GameInformation(game_idx=game_spec.game_idx, eval_model_pid=game_spec.eval_model_pid, eval_opponent_name=game_spec.eval_opponent_name)
 
-    # Extract optional per-env conversation cap for use in actor wrapper
+    # Extract optional per-env overrides and caps for use in actor wrapper
     _env_kwargs = dict(getattr(game_spec, "env_kwargs", {}))
     conversation_max_tokens = _env_kwargs.get("conversation_max_tokens")
+    opponent_prompt_template = _env_kwargs.get("opponent_prompt_template")
 
+    # Build a pid->AgentSpec mapping for reliable lookups
+    _pid2spec = {spec.pid: spec for spec in game_spec.agent_specs}
     agents = {}
     for agent_spec in game_spec.agent_specs:
         is_openrouter = agent_spec.openrouter_name is not None
@@ -81,8 +84,11 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
     while True:
         pid, obs = env.get_observation()
         agent_entry = agents[pid]
-        if agent_entry["is_openrouter"]:  # opponent via OpenRouter API, format with default template
-            prompt = OBSERVATION_FORMATTING["default"](observation=obs)
+        if agent_entry["is_openrouter"]:  # opponent via OpenRouter API; allow template override
+            # Prefer explicit opponent template from env kwargs; else use the agent's prompt_template; else default-auto if available
+            tpl_key = opponent_prompt_template or getattr(_pid2spec.get(pid, None), "prompt_template", None) or ("default-auto" if "default-auto" in OBSERVATION_FORMATTING else "default")
+            fmt_fn = OBSERVATION_FORMATTING.get(tpl_key, OBSERVATION_FORMATTING.get("default-auto", OBSERVATION_FORMATTING["default"]))
+            prompt = fmt_fn(observation=obs)
             raw = agent_entry["model"](prompt)
             extracted, format_feedback = agent_entry["extract_fn"](raw)
         else:  # local checkpointed model (already does extraction internally)
