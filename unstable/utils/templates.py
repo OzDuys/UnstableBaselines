@@ -19,22 +19,19 @@ def _is_conversation_turn(observation: str) -> bool:
         "free-chat",
         "free chat",
     )
+    # Use concrete decision-phase cues that only appear when conversation ends.
+    # Do NOT include generic 'decision turn' from the static round-structure prompt text.
     dec_keys = (
+        "chat finished",
         "submit your decisions",
         "submit your decision",
-        "decision turn",
     )
 
     last_conv = max((o.rfind(k) for k in conv_keys), default=-1)
     last_dec = max((o.rfind(k) for k in dec_keys), default=-1)
 
-    # If decision cue appears later than conversation cue, treat as decision turn; else conversation.
-    if last_dec > last_conv >= 0:
-        return False
-    if last_conv >= 0 and last_dec == -1:
-        return True
-    # No clear signal; default to decision False (i.e., not a conversation turn)
-    return False
+    # Conversation iff the latest conversation cue appears after the latest decision cue
+    return last_conv > last_dec
 
 
 def _instruction_line_for_observation(observation: str, default_final: str = "Please reason step by step, and put your final response within \\boxed{}.", default_message: str = "Please reason step by step, and put your message to other players within \\boxed{}.") -> str:
