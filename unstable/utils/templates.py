@@ -34,7 +34,7 @@ def _is_conversation_turn(observation: str) -> bool:
     return last_conv > last_dec
 
 
-def _instruction_line_for_observation(observation: str, default_final: str = "Please reason step by step, and put your final response within \\boxed{}.", default_message: str = "Please reason step by step, and put your message to other players within \\boxed{}.") -> str:
+def _instruction_line_for_observation(observation: str, default_final: str = "Please reason step by step, and put your final response within \\boxed{}.", default_message: str = "Please reason step by step, and put your broadcast message to all other players within \\boxed{}.") -> str:
     """Choose instruction line based on whether this looks like a conversation or decision turn."""
     return default_message if _is_conversation_turn(observation) else default_final
 TEMPLATE_PARTS = {
@@ -82,7 +82,7 @@ TEMPLATE_PARTS = {
     },
     # Conversation-turn variant for qwen3-custom-generic
     "qwen3-custom-generic-conversation-turn": {
-        "user": lambda obs: f"<|im_start|>user\n{obs}\nPlease reason step by step, and put your message to other players within \\boxed{{}}.<|im_end|>\n",
+        "user": lambda obs: f"<|im_start|>user\n{obs}\nPlease reason step by step, and put your broadcast message to all other players within \\boxed{{}}.<|im_end|>\n",
         "assistant": "<|im_start|>assistant\n"
     },
     # Auto variant for qwen3-custom-generic (chooses based on observation)
