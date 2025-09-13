@@ -19,7 +19,12 @@ def write_game_information_to_file(game_info: GameInformation, filename: str) ->
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "game_idx","turn_idx","pid","name","obs","prompt","full_action","extracted_action","step_info","final_reward","eval_model_pid","eval_opponent_name"
+                "game_idx","turn_idx","pid","name","obs","prompt","full_action","extracted_action","step_info",
+                # rewards
+                "final_reward","final_reward_transformed",
+                "step_reward_raw_final","step_reward_env","step_reward_shaped",
+                # eval meta
+                "eval_model_pid","eval_opponent_name"
             ],
         )
         writer.writeheader()
@@ -37,6 +42,10 @@ def write_game_information_to_file(game_info: GameInformation, filename: str) ->
                 "extracted_action": game_info.extracted_actions[t] if t < len(game_info.extracted_actions) else "",
                 "step_info": json.dumps(game_info.step_infos[t] if t < len(game_info.step_infos) else {}, ensure_ascii=False),
                 "final_reward": game_info.final_rewards.get(pid, ""),
+                "final_reward_transformed": (game_info.final_rewards_transformed.get(pid, "") if hasattr(game_info, "final_rewards_transformed") else ""),
+                "step_reward_raw_final": (game_info.step_rewards_raw_final[t] if hasattr(game_info, "step_rewards_raw_final") and t < len(game_info.step_rewards_raw_final) else ""),
+                "step_reward_env": (game_info.step_rewards_env[t] if hasattr(game_info, "step_rewards_env") and t < len(game_info.step_rewards_env) else ""),
+                "step_reward_shaped": (game_info.step_rewards_shaped[t] if hasattr(game_info, "step_rewards_shaped") and t < len(game_info.step_rewards_shaped) else ""),
                 "eval_model_pid": game_info.eval_model_pid,
                 "eval_opponent_name": game_info.eval_opponent_name,
             }

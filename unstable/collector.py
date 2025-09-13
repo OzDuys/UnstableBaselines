@@ -12,6 +12,7 @@ assert ta.__version__ >= "0.6.16", f"TextArena package version is too old: {ta._
 # local imports
 from unstable.actor import VLLMActor
 from unstable._types import GameSpec, GameInformation, PlayerTrajectory, TaskMeta
+from unstable.reward_transformations import ComposeStepRewardTransforms, ComposeFinalRewardTransforms
 from unstable.utils.logging import setup_logger
 from unstable.utils.templates import ACTION_EXTRACTION, OBSERVATION_FORMATTING
 
@@ -126,11 +127,36 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
     game_information.final_rewards = final_rewards
     game_information.num_turns = turn
     game_information.game_info = game_info
-    # Populate per-step rewards (currently replicate final reward per acting pid; if shaping added later, update here)
+    # Populate rich per-step reward diagnostics for CSV output by asking the buffer to compute them
     try:
-        game_information.step_rewards = [final_rewards.get(p, None) for p in game_information.pid]
+        # Access buffer for accurate transformed/shaped rewards
+        # Note: buffer is not directly available here; we rely on runtime wiring: Collector has self.buffer
+        # We will compute per-pid mapping using player trajectories that were actually collecting data
+        pid2traj = {traj.pid: traj for traj in [agents[p]["traj"] for p in agents if agents[p]["traj"] is not None]}
+        # For training tasks, Collector._post_train will have both buffer and these trajectories; compute here for consistency
+        # We call a remote helper on the buffer to compute rewards for each trajectory, avoiding duplication of transform logic
+        transformed_final_map = {}
+        step_raw_final = []
+        step_env_final = []
+        step_shaped = []
+        # We need self.buffer here; we're inside run_game (a task function) without self. So we can only attach raw replicates now.
+        # The accurate computation will be done in _post_train when the buffer is available.
+        step_raw_final = [final_rewards.get(p, None) for p in game_information.pid]
+        step_env_final = step_raw_final[:]
+        step_shaped = [None]*len(step_raw_final)
+        transformed_final_map = dict(final_rewards)
+        game_information.step_rewards = step_env_final
+        game_information.step_rewards_raw_final = step_raw_final
+        game_information.step_rewards_env = step_env_final
+        game_information.step_rewards_shaped = step_shaped
+        game_information.final_rewards_transformed = transformed_final_map
     except Exception:
-        game_information.step_rewards = [None]*len(game_information.pid)
+        n = len(game_information.pid)
+        game_information.step_rewards = [final_rewards.get(p, None) for p in game_information.pid]
+        game_information.step_rewards_raw_final = [final_rewards.get(p, None) for p in game_information.pid]
+        game_information.step_rewards_env = [final_rewards.get(p, None) for p in game_information.pid]
+        game_information.step_rewards_shaped = [None]*n
+        game_information.final_rewards_transformed = dict(final_rewards)
     return game_information, [agents[pid]["traj"] for pid in agents if agents[pid]["traj"] is not None]
 
 
@@ -176,9 +202,41 @@ class Collector:
         self._post_train(meta, game_information, player_trajs) if meta.type=="train" else self._post_eval(meta, game_information)
     
     def _post_train(self, meta: TaskMeta, game_information: GameInformation, player_trajs: List[PlayerTrajectory]):
+        # Add trajectories to buffer and tracker
         for traj in player_trajs:
             self.buffer.add_player_trajectory.remote(traj, env_id=meta.env_id)
             self.tracker.add_player_trajectory.remote(traj, env_id=meta.env_id)
+        # Now that buffer has the transforms, compute accurate shaped/env rewards for CSV diagnostic columns
+        try:
+            pid2traj = {traj.pid: traj for traj in player_trajs}
+            # Compute per-pid reward maps via buffer helper
+            rewards_map = {}
+            for pid, traj in pid2traj.items():
+                rewards_map[pid] = ray.get(self.buffer.compute_rewards_for_logging.remote(traj, meta.env_id))
+            # Build per-turn lists aligned to acting pid
+            step_raw_final = [rewards_map.get(p, {}).get("raw_final") if p in rewards_map else game_information.final_rewards.get(p, None) for p in game_information.pid]
+            step_env_final = [rewards_map.get(p, {}).get("env_final") if p in rewards_map else game_information.final_rewards.get(p, None) for p in game_information.pid]
+            step_shaped = []
+            # For shaped, index by per-turn step index
+            turn_counts = {pid: 0 for pid in pid2traj.keys()}
+            for p in game_information.pid:
+                if p in rewards_map:
+                    idx = turn_counts[p]
+                    shaped_list = rewards_map[p]["shaped_per_step"]
+                    step_shaped.append(shaped_list[idx] if idx < len(shaped_list) else None)
+                    turn_counts[p] += 1
+                else:
+                    step_shaped.append(None)
+            # Final rewards transformed per pid
+            final_transformed = {pid: rewards_map.get(pid, {}).get("env_final", game_information.final_rewards.get(pid, None)) for pid in game_information.final_rewards.keys()}
+            # Write into GameInformation
+            game_information.step_rewards = step_env_final
+            game_information.step_rewards_raw_final = step_raw_final
+            game_information.step_rewards_env = step_env_final
+            game_information.step_rewards_shaped = step_shaped
+            game_information.final_rewards_transformed = final_transformed
+        except Exception as exc:
+            self.logger.warning(f"Failed to compute shaped/env rewards for CSV: {exc}")
         # write per-game CSV for training
         self.tracker.add_train_game_information.remote(game_information=game_information, env_id=meta.env_id)
         self.game_scheduler.update.remote(game_info=game_information)

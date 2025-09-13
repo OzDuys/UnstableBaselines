@@ -37,8 +37,17 @@ class GameInformation:
     step_infos:         List[Dict] = field(default_factory=list)
     # Per-step reward for the acting player after game end (replicated final reward or shaped value if available)
     step_rewards:       List[float] = field(default_factory=list)
+    # Detailed per-turn rewards for CSV diagnostics
+    # Raw environment terminal reward replicated per acting turn (before any transforms)
+    step_rewards_raw_final:       List[Optional[float]] = field(default_factory=list)
+    # Final reward after any final/role transforms, replicated per acting turn
+    step_rewards_env:             List[Optional[float]] = field(default_factory=list)
+    # Shaped step reward used for training (after step-level transforms); aligned to turns
+    step_rewards_shaped:          List[Optional[float]] = field(default_factory=list)
     game_info:          Dict = field(default_factory=dict)
     final_rewards:      Dict[int, float] = field(default_factory=dict)
+    # Final rewards after final transforms (per pid)
+    final_rewards_transformed: Dict[int, float] = field(default_factory=dict)
     num_turns:          int = field(default_factory=int)
     names:              Dict[int, str] = field(default_factory=dict)
     eval_model_pid:     Optional[int] = None

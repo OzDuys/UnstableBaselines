@@ -1,7 +1,7 @@
 
 import os, ray, tree, random
 from threading import Lock
-from typing import List, Dict, Optional, Tuple, Callable
+from typing import List, Dict, Optional, Tuple, Callable, Any
 
 # local imports
 from unstable.utils.logging import setup_logger
@@ -75,6 +75,25 @@ class StepBuffer(BaseBuffer):
         with self.mutex: 
             self.steps.clear()
 
+    def compute_rewards_for_logging(self, player_traj: PlayerTrajectory, env_id: str) -> Dict[str, Any]:
+        """Return detailed rewards for logging CSVs using this buffer's transforms.
+
+        Returns a dict with keys:
+        - raw_final: original env final reward (float)
+        - env_final: final reward after final_reward_transformation (float)
+        - shaped_per_step: list of shaped rewards per step (List[float])
+        """
+        raw_final = float(player_traj.final_reward)
+        env_final = float(self.final_reward_transformation(reward=raw_final, pid=player_traj.pid, env_id=env_id)) if self.final_reward_transformation else raw_final
+        shaped = []
+        for idx in range(len(player_traj.obs)):
+            if self.step_reward_transformation:
+                s = float(self.step_reward_transformation(player_traj=player_traj, step_index=idx, reward=env_final))
+            else:
+                s = env_final
+            shaped.append(s)
+        return {"raw_final": raw_final, "env_final": env_final, "shaped_per_step": shaped}
+
 
 @ray.remote
 class EpisodeBuffer(BaseBuffer):
@@ -133,3 +152,22 @@ class EpisodeBuffer(BaseBuffer):
     def clear(self):
         with self.mutex: 
             self.episodes.clear()
+
+    def compute_rewards_for_logging(self, player_traj: PlayerTrajectory, env_id: str) -> Dict[str, Any]:
+        """Return detailed rewards for logging CSVs using this buffer's transforms.
+
+        Returns a dict with keys:
+        - raw_final: original env final reward (float)
+        - env_final: final reward after final_reward_transformation (float)
+        - shaped_per_step: list of shaped rewards per step (List[float])
+        """
+        raw_final = float(player_traj.final_reward)
+        env_final = float(self.final_reward_transformation(reward=raw_final, pid=player_traj.pid, env_id=env_id)) if self.final_reward_transformation else raw_final
+        shaped = []
+        for idx in range(len(player_traj.obs)):
+            if self.step_reward_transformation:
+                s = float(self.step_reward_transformation(player_traj=player_traj, step_index=idx, reward=env_final))
+            else:
+                s = env_final
+            shaped.append(s)
+        return {"raw_final": raw_final, "env_final": env_final, "shaped_per_step": shaped}
