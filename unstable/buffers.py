@@ -42,10 +42,34 @@ class StepBuffer(BaseBuffer):
 
     def add_player_trajectory(self, player_traj: PlayerTrajectory, env_id: str):
         reward = self.final_reward_transformation(reward=player_traj.final_reward, pid=player_traj.pid, env_id=env_id) if self.final_reward_transformation else player_traj.final_reward
+        invalid_count = 0
         for idx in range(len(player_traj.obs)):
             step_reward = self.step_reward_transformation(player_traj=player_traj, step_index=idx, reward=reward) if self.step_reward_transformation else reward
-            with self.mutex: 
-                self.steps.append(Step(pid=player_traj.pid, obs=player_traj.obs[idx], act=player_traj.actions[idx], reward=step_reward, env_id=env_id, step_info={"raw_reward": player_traj.final_reward, "env_reward": reward, "step_reward": step_reward}))
+            # Attach invalid_move proxy if provided via format_feedbacks
+            fb = {}
+            try:
+                fb = player_traj.format_feedbacks[idx] if idx < len(player_traj.format_feedbacks) else {}
+            except Exception:
+                pass
+            invalid_flag = bool(fb.get("invalid_move", False))
+            if invalid_flag:
+                invalid_count += 1
+            with self.mutex:
+                self.steps.append(
+                    Step(
+                        pid=player_traj.pid,
+                        obs=player_traj.obs[idx],
+                        act=player_traj.actions[idx],
+                        reward=step_reward,
+                        env_id=env_id,
+                        step_info={
+                            "raw_reward": player_traj.final_reward,
+                            "env_reward": reward,
+                            "step_reward": step_reward,
+                            "invalid_move": invalid_flag,
+                        },
+                    )
+                )
         self.logger.info(f"Buffer size: {len(self.steps)}, added {len(player_traj.obs)} steps")
         try:
             # W&B buffer stats after add
@@ -53,6 +77,8 @@ class StepBuffer(BaseBuffer):
                 "size": len(self.steps),
                 "added": len(player_traj.obs),
                 "training_steps": self.training_steps,
+                "added_invalid_moves": invalid_count,
+                "added_invalid_rate": (invalid_count / max(1, len(player_traj.obs))),
             }, env_id=env_id)
         except Exception:
             pass
@@ -116,6 +142,56 @@ class StepBuffer(BaseBuffer):
                         # Expand counts as separate keys for easy charting
                         for k, v in counts.items():
                             stats[f"batch_env_count/{k}"] = v
+                        self.tracker.log_buffer.remote(stats)
+                    except Exception:
+                        pass
+            elif self.buffer_strategy == "stratified_env_role":
+                # Build (env_id, pid) -> indices mapping to balance roles per environment
+                bucket_to_indices: Dict[Tuple[str, int], List[int]] = {}
+                for idx, s in enumerate(self.steps):
+                    bucket_to_indices.setdefault((s.env_id, s.pid), []).append(idx)
+
+                buckets = list(bucket_to_indices.keys())
+                if not buckets:
+                    batch = []
+                else:
+                    per_bucket = max(1, batch_size // max(1, len(buckets)))
+                    selected_indices = []
+                    # First pass: up to per_bucket from each bucket
+                    for b in buckets:
+                        idxs = bucket_to_indices[b]
+                        take = min(per_bucket, len(idxs))
+                        if take > 0:
+                            selected_indices.extend(random.sample(idxs, take))
+                    # Fill remaining uniformly from leftover pool
+                    remaining = batch_size - len(selected_indices)
+                    if remaining > 0:
+                        leftover = [i for _, idxs in bucket_to_indices.items() for i in idxs if i not in selected_indices]
+                        if leftover:
+                            selected_indices.extend(random.sample(leftover, min(remaining, len(leftover))))
+
+                    # Build batch and remove
+                    selected_indices = sorted(set(selected_indices), reverse=True)
+                    batch = [self.steps[i] for i in selected_indices]
+                    for i in selected_indices:
+                        self.steps.pop(i)
+
+                    # Log per-batch env/role histogram
+                    try:
+                        env_counts: Dict[str, int] = {}
+                        role_counts: Dict[int, int] = {}
+                        env_role_counts: Dict[str, int] = {}
+                        for s in batch:
+                            env_counts[s.env_id] = env_counts.get(s.env_id, 0) + 1
+                            role_counts[s.pid] = role_counts.get(s.pid, 0) + 1
+                            env_role_counts[f"{s.env_id}/role_{s.pid}"] = env_role_counts.get(f"{s.env_id}/role_{s.pid}", 0) + 1
+                        stats = {"batch_size": len(batch)}
+                        for k, v in env_counts.items():
+                            stats[f"batch_env_count/{k}"] = v
+                        for k, v in role_counts.items():
+                            stats[f"batch_role_count/{k}"] = v
+                        for k, v in env_role_counts.items():
+                            stats[f"batch_env_role_count/{k}"] = v
                         self.tracker.log_buffer.remote(stats)
                     except Exception:
                         pass

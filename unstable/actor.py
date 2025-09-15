@@ -35,6 +35,7 @@ class VLLMActor:
         sampling_temp = engine_args_dict.pop("temperature", 0.7)
         sampling_top_p = engine_args_dict.pop("top_p", 0.95)
         sampling_max_tokens = engine_args_dict.pop("max_tokens", 4096)
+        sampling_logprobs = bool(engine_args_dict.pop("enable_logprobs", False))
         
         # We also need to handle the nested lora_config dict
         lora_config = engine_args_dict.pop("lora_config", {})
@@ -64,9 +65,10 @@ class VLLMActor:
             
         # Use the parameters we extracted earlier
         self.sampling_params = SamplingParams(
-            temperature=sampling_temp, 
-            top_p=sampling_top_p, 
-            max_tokens=sampling_max_tokens
+            temperature=sampling_temp,
+            top_p=sampling_top_p,
+            max_tokens=sampling_max_tokens,
+            logprobs=(1 if sampling_logprobs else None),
         )
 
         # The rest of your __init__ method remains the same...
@@ -84,9 +86,11 @@ class VLLMActor:
         self._tok_hist = deque()
         self._batch_task = asyncio.create_task(self._batch_loop())
         self._report_task = asyncio.create_task(self._report_loop())
-        self._lora_ids: Dict[str, int] = {"base": 0}
+        self._lora_ids = {"base": 0}
         self._next_lora_id = 1
         self._last_step_time = time.monotonic()
+        # Track simple logprob proxy for diagnostics when enabled
+        self._logp_hist = deque()
 
     async def submit_prompt(self, prompt: str, lora_path: Optional[str] = None, max_tokens_override: Optional[int] = None) -> str:
         if lora_path is not None and not isinstance(lora_path, str): lora_path = str(lora_path)
@@ -123,6 +127,7 @@ class VLLMActor:
                         temperature=self.sampling_params.temperature,
                         top_p=self.sampling_params.top_p,
                         max_tokens=int(max_override),
+                        logprobs=self.sampling_params.logprobs,
                     )
                     try: self.engine.add_request(req_id, prompt, sp, lora_request=lora_req)
                     except Exception as e:
@@ -155,6 +160,19 @@ class VLLMActor:
                     for _ in range(new_tok): 
                         self._tok_hist.append(now)
                     if segment.finish_reason is not None:
+                        # If vLLM provided logprobs, record a simple average of chosen token logprobs
+                        try:
+                            lp_list = getattr(segment, "logprobs", None)
+                            if lp_list:
+                                chosen = []
+                                for d in lp_list:
+                                    if isinstance(d, dict) and d:
+                                        # with logprobs=1 we expect the chosen token
+                                        chosen.append(max(d.values()))
+                                if chosen:
+                                    self._logp_hist.append(sum(chosen) / max(1, len(chosen)))
+                        except Exception:
+                            pass
                         fut = self._futures.pop(req_id, None)
                         if fut and not fut.done():
                             fut.set_result(segment.text)
@@ -167,7 +185,20 @@ class VLLMActor:
         self.logger.info("Starting _report_loop")
         while True:
             await asyncio.sleep(5.0) # only send every 5 sec
+            # Aggregate recent chosen-token logprobs if available
+            recent_lp = None
+            try:
+                if self._logp_hist:
+                    # Average over last ~window by count (bounded by history length)
+                    k = min(len(self._logp_hist), 256)
+                    if k > 0:
+                        recent = list(self._logp_hist)[-k:]
+                        recent_lp = sum(recent) / k
+            except Exception:
+                recent_lp = None
             stats = {"queued": self._queued, "running": self._running, "tok_s": self._tok_rate()}
+            if recent_lp is not None:
+                stats["avg_chosen_logp"] = float(recent_lp)
             self.logger.info(f"inside while loop _report_loop stats: {stats}")
             try: ray.get(self.tracker.log_inference.remote(actor=self.name, gpu_ids=self.gpu_ids, stats=stats))
             except Exception as e: self.logger.warning(f"tracker logging failed: {e}")
