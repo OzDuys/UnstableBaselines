@@ -29,6 +29,13 @@ class VLLMActor:
         if "model_name" in engine_args_dict and "model" not in engine_args_dict:
             self.logger.info(f"Mapping legacy parameter 'model_name' ({engine_args_dict['model_name']}) to 'model'.")
             engine_args_dict["model"] = engine_args_dict.pop("model_name")
+        # Clamp max_num_seqs to a safer bound to reduce init-time memory pressure
+        if "max_num_seqs" in engine_args_dict:
+            original = int(engine_args_dict["max_num_seqs"])
+            clamped = max(1, min(original, 64))
+            if clamped != original:
+                self.logger.info(f"Clamping max_num_seqs from {original} to {clamped} to reduce startup memory.")
+                engine_args_dict["max_num_seqs"] = clamped
         
         # 3. Extract parameters that are NOT part of EngineArgs
         # These are used for SamplingParams later, not engine creation.
@@ -36,20 +43,26 @@ class VLLMActor:
         sampling_top_p = engine_args_dict.pop("top_p", 0.95)
         sampling_max_tokens = engine_args_dict.pop("max_tokens", 4096)
         sampling_logprobs = bool(engine_args_dict.pop("enable_logprobs", False))
-        
-        # We also need to handle the nested lora_config dict
+
+        # We also need to handle the nested lora_config dict and explicit enable flag
+        enable_lora_flag = bool(engine_args_dict.pop("enable_lora", False))
         lora_config = engine_args_dict.pop("lora_config", {})
-        lora_rank = lora_config.get("lora_rank", 32) # Default if not found
+        lora_rank = int(lora_config.get("lora_rank", 32)) # Default if not found
 
         # 4. Initialize EngineArgs by unpacking the cleaned dictionary
         # This will automatically pass gpu_memory_utilization, max_num_batched_tokens, etc.
-        self.logger.info(f"Initializing VLLM Engine with args: {engine_args_dict}")
-        engine_args = EngineArgs(
-            enable_lora=True,
-            max_lora_rank=lora_rank,
-            # Add other static/required args here if necessary
-            **engine_args_dict 
-        )
+        self.logger.info(f"Initializing VLLM Engine with args: {engine_args_dict} | enable_lora={enable_lora_flag}, max_lora_rank={lora_rank}")
+        # Only pass LoRA-related args when enabled (avoids extra overhead / incompat)
+        if enable_lora_flag:
+            engine_args = EngineArgs(
+                enable_lora=True,
+                max_lora_rank=lora_rank,
+                **engine_args_dict
+            )
+        else:
+            engine_args = EngineArgs(
+                **engine_args_dict
+            )
 
         try:
             self.engine = LLMEngine.from_engine_args(engine_args)
@@ -62,6 +75,7 @@ class VLLMActor:
 
         self.logger.info(f"vLLM model path or name: {engine_args.model}")
         self.logger.info(f"Model architecture: {self.engine.model_config.__dict__}")
+        self._lora_enabled = enable_lora_flag
             
         # Use the parameters we extracted earlier
         self.sampling_params = SamplingParams(
@@ -115,13 +129,15 @@ class VLLMActor:
                     self._queued -= 1
                     self._running += 1
 
-                    if path:
+                    if path and self._lora_enabled:
                         if path not in self._lora_ids:
                             self._lora_ids[path] = self._next_lora_id
                             self._next_lora_id += 1
                         lora_req = LoRARequest(path, self._lora_ids[path], path)
                     else:
                         lora_req = None
+                        if path and not self._lora_enabled:
+                            self.logger.warning(f"LoRA path provided ({path}) but LoRA is disabled; proceeding without LoRA.")
                     # Apply explicit per-call override if provided; else use default sampling params
                     sp = self.sampling_params if (max_override is None) else SamplingParams(
                         temperature=self.sampling_params.temperature,
