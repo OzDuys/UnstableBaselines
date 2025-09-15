@@ -179,6 +179,16 @@ class Collector:
         self.flight: Dict[ray.ObjectRef, TaskMeta] = {}
         self._num_running = lambda typ: sum(meta.type == typ for meta in self.flight.values())
         self.logger.info("Collector initialized")
+        # runtime counters
+        self._games_started = 0
+        self._games_completed = 0
+        self._games_failed = 0
+        self._train_completed = 0
+        self._eval_completed = 0
+        self._actor_crashes = 0
+        self._task_errors = 0
+        self._launch_exceptions = 0
+        self._loop_iter = 0
     
     def _launch_jobs(self, max_train: int, max_eval: Optional[int]):
         while self._num_running("train") < max_train: # submit new train game
@@ -188,8 +198,24 @@ class Collector:
                 actor: VLLMActor = next(self._actor_iter) # get actor
                 ref = run_game.remote(game_spec, actor)
                 self.flight[ref] = TaskMeta("train", game_spec.env_id)
+                self._games_started += 1
+                # log start
+                try:
+                    self.tracker.log_collector.remote({
+                        "games_started": self._games_started,
+                        "games_in_flight": len(self.flight),
+                        "running_train": self._num_running("train"),
+                        "running_eval": self._num_running("eval"),
+                    })
+                except Exception:
+                    pass
             except Exception as exc:
                 self.logger.info(f"Exception in train game {game_spec}: {exc}")
+                self._launch_exceptions += 1
+                try:
+                    self.tracker.log_collector.remote({"launch_exceptions": self._launch_exceptions})
+                except Exception:
+                    pass
 
         while max_eval!=None and self._num_running("eval") < max_eval:
             try:
@@ -198,14 +224,65 @@ class Collector:
                 actor: VLLMActor = next(self._actor_iter) # get actor
                 ref = run_game.remote(game_spec, actor)
                 self.flight[ref] = TaskMeta("eval", game_spec.env_id)
+                self._games_started += 1
+                try:
+                    self.tracker.log_collector.remote({
+                        "games_started": self._games_started,
+                        "games_in_flight": len(self.flight),
+                        "running_train": self._num_running("train"),
+                        "running_eval": self._num_running("eval"),
+                    })
+                except Exception:
+                    pass
             except Exception as exc:
                 self.logger.info(f"Exception in eval game {game_spec}: {exc}")
+                self._launch_exceptions += 1
+                try:
+                    self.tracker.log_collector.remote({"launch_exceptions": self._launch_exceptions})
+                except Exception:
+                    pass
 
     def _handle_finished_job(self, ref):
         meta = self.flight.pop(ref)
-        try: game_information, player_trajs = ray.get(ref)
-        except (RayTaskError, RayActorError) as err: self.logger.error(f"Remote episode failed for {meta.type} task: env={meta.env_id}: {err}", exc_info=True); return
+        try:
+            game_information, player_trajs = ray.get(ref)
+        except (RayTaskError, RayActorError) as err:
+            self.logger.error(f"Remote episode failed for {meta.type} task: env={meta.env_id}: {err}", exc_info=True)
+            self._games_failed += 1
+            if isinstance(err, RayActorError):
+                self._actor_crashes += 1
+            else:
+                self._task_errors += 1
+            try:
+                self.tracker.log_collector.remote({
+                    "games_failed": self._games_failed,
+                    "actor_crashes": self._actor_crashes,
+                    "task_errors": self._task_errors,
+                    "games_in_flight": len(self.flight),
+                    "running_train": self._num_running("train"),
+                    "running_eval": self._num_running("eval"),
+                })
+            except Exception:
+                pass
+            return
         self._post_train(meta, game_information, player_trajs) if meta.type=="train" else self._post_eval(meta, game_information)
+        # success path
+        self._games_completed += 1
+        if meta.type == "train":
+            self._train_completed += 1
+        else:
+            self._eval_completed += 1
+        try:
+            self.tracker.log_collector.remote({
+                "games_completed": self._games_completed,
+                "train_completed": self._train_completed,
+                "eval_completed": self._eval_completed,
+                "games_in_flight": len(self.flight),
+                "running_train": self._num_running("train"),
+                "running_eval": self._num_running("eval"),
+            })
+        except Exception:
+            pass
     
     def _post_train(self, meta: TaskMeta, game_information: GameInformation, player_trajs: List[PlayerTrajectory]):
         # Add trajectories to buffer and tracker
@@ -254,6 +331,17 @@ class Collector:
         self.logger.info("entered collect func")
         while ray.get(self.buffer.continue_collection.remote()):
             self.logger.info("entered colelct loop")
+            self._loop_iter += 1
+            try:
+                self.tracker.log_collector.remote({
+                    "loop_iter": self._loop_iter,
+                    "actors": len(self.actors),
+                    "games_in_flight": len(self.flight),
+                    "running_train": self._num_running("train"),
+                    "running_eval": self._num_running("eval"),
+                })
+            except Exception:
+                pass
             self._launch_jobs(num_train_workers, num_eval_workers)
             if not self.flight: continue
             done_ref, _ = ray.wait(list(self.flight), num_returns=1)

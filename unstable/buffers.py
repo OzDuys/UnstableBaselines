@@ -47,6 +47,15 @@ class StepBuffer(BaseBuffer):
             with self.mutex: 
                 self.steps.append(Step(pid=player_traj.pid, obs=player_traj.obs[idx], act=player_traj.actions[idx], reward=step_reward, env_id=env_id, step_info={"raw_reward": player_traj.final_reward, "env_reward": reward, "step_reward": step_reward}))
         self.logger.info(f"Buffer size: {len(self.steps)}, added {len(player_traj.obs)} steps")
+        try:
+            # W&B buffer stats after add
+            self.tracker.log_buffer.remote({
+                "size": len(self.steps),
+                "added": len(player_traj.obs),
+                "training_steps": self.training_steps,
+            }, env_id=env_id)
+        except Exception:
+            pass
         # downsample if necessary
         excess_num_samples = max(0, len(self.steps) - self.max_buffer_size); self.logger.info(f"Excess Num Samples: {excess_num_samples}")
         if excess_num_samples > 0:
@@ -56,6 +65,14 @@ class StepBuffer(BaseBuffer):
                 for b in randm_sampled:
                     self.steps.remove(b)
                 self.logger.info(f"Buffer size after downsampling: {len(self.steps)}")
+            try:
+                self.tracker.log_buffer.remote({
+                    "size": len(self.steps),
+                    "evicted": excess_num_samples,
+                    "excess": excess_num_samples,
+                }, env_id=env_id)
+            except Exception:
+                pass
 
     def get_batch(self, batch_size: int) -> List[Step]:
         with self.mutex: 
@@ -66,6 +83,14 @@ class StepBuffer(BaseBuffer):
         try: write_training_data_to_file(batch=batch, filename=os.path.join(self.local_storage_dir, f"train_data_step_{self.training_steps}.csv"))
         except Exception as exc: self.logger.error(f"Exception when trying to write training data to file: {exc}")
         self.training_steps += 1
+        try:
+            self.tracker.log_buffer.remote({
+                "size": len(self.steps),
+                "batch_size": len(batch),
+                "training_steps": self.training_steps,
+            })
+        except Exception:
+            pass
         return batch
 
     def stop(self):                 self.collect = False

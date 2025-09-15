@@ -26,6 +26,9 @@ class BaseTracker:
     def add_trajectory(self, trajectory: PlayerTrajectory, env_id: str): raise NotImplementedError
     def add_eval_episode(self, episode_info: Dict, final_reward: int, player_id: int, env_id: str, iteration: int): raise NotImplementedError
     def log_lerner(self, info_dict: Dict): raise NotImplementedError
+    # Optional structured logging hooks for runtime components
+    def log_collector(self, stats: Dict): raise NotImplementedError
+    def log_buffer(self, stats: Dict, env_id: Optional[str] = None): raise NotImplementedError
 
     
 @ray.remote
@@ -260,3 +263,36 @@ class Tracker(BaseTracker):
         for inf_key in ["Game Length", "Format Success Rate - correct_answer_format", "Format Success Rate - invalid_move"]: 
             self._interface_stats[inf_key] = np.mean([float(np.mean(dq)) for k,dq in self._m.items() if inf_key in k])
         return self._interface_stats
+
+    # -------- New: generic logging hooks for collector and buffers --------
+    def log_collector(self, stats: Dict):
+        """Log high-level Collector runtime stats to W&B under 'collector/*'.
+
+        Expected keys (free-form):
+        - games_started, games_completed, games_failed
+        - train_completed, eval_completed
+        - actor_crashes, task_errors, launch_exceptions
+        - games_in_flight, running_train, running_eval, actors, loop_iter
+        """
+        try:
+            for k, v in (stats or {}).items():
+                # Store cumulative or instantaneous values; aggregator will average when flushed
+                self._put(f"collector/{k}", v)
+            self._buffer.update(self._agg("collector"))
+            self._flush_if_due()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.info(f"Exception in log_collector: {exc}")
+
+    def log_buffer(self, stats: Dict, env_id: Optional[str] = None):
+        """Log buffer stats to W&B under 'buffer[-env]/ *'.
+
+        Example keys: size, added, evicted, excess, batch_size, training_steps.
+        """
+        try:
+            prefix = f"buffer-{env_id}" if env_id else "buffer"
+            for k, v in (stats or {}).items():
+                self._put(f"{prefix}/{k}", v)
+            self._buffer.update(self._agg(prefix))
+            self._flush_if_due()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.info(f"Exception in log_buffer: {exc}")
