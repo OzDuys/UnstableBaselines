@@ -75,9 +75,54 @@ class StepBuffer(BaseBuffer):
                 pass
 
     def get_batch(self, batch_size: int) -> List[Step]:
-        with self.mutex: 
-            batch = random.sample(self.steps, batch_size)
-            for b in batch: self.steps.remove(b)
+        with self.mutex:
+            if self.buffer_strategy == "stratified_env":
+                # Build env -> indices mapping to sample evenly across envs
+                env_to_indices: Dict[str, List[int]] = {}
+                for idx, s in enumerate(self.steps):
+                    env_to_indices.setdefault(s.env_id, []).append(idx)
+
+                # Compute target per-env counts
+                envs = list(env_to_indices.keys())
+                if not envs:
+                    batch = []
+                else:
+                    per_env = max(1, batch_size // max(1, len(envs)))
+                    selected_indices = []
+                    # First pass: up to per_env from each
+                    for env in envs:
+                        idxs = env_to_indices[env]
+                        take = min(per_env, len(idxs))
+                        selected_indices.extend(random.sample(idxs, take))
+                    # Fill remaining uniformly from leftover pool
+                    remaining = batch_size - len(selected_indices)
+                    if remaining > 0:
+                        leftover = [i for env, idxs in env_to_indices.items() for i in idxs if i not in selected_indices]
+                        if leftover:
+                            selected_indices.extend(random.sample(leftover, min(remaining, len(leftover))))
+
+                    # Build batch and remove in descending index order to keep indices valid
+                    selected_indices = sorted(set(selected_indices), reverse=True)
+                    batch = [self.steps[i] for i in selected_indices]
+                    for i in selected_indices:
+                        self.steps.pop(i)
+
+                    # Log per-batch env histogram for visibility
+                    try:
+                        counts: Dict[str, int] = {}
+                        for s in batch:
+                            counts[s.env_id] = counts.get(s.env_id, 0) + 1
+                        stats = {"batch_size": len(batch)}
+                        # Expand counts as separate keys for easy charting
+                        for k, v in counts.items():
+                            stats[f"batch_env_count/{k}"] = v
+                        self.tracker.log_buffer.remote(stats)
+                    except Exception:
+                        pass
+            else:
+                batch = random.sample(self.steps, batch_size)
+                for b in batch:
+                    self.steps.remove(b)
         batch = self.sampling_reward_transformation(batch) if self.sampling_reward_transformation is not None else batch
         self.logger.info(f"Sampling {len(batch)} samples from buffer.")
         try: write_training_data_to_file(batch=batch, filename=os.path.join(self.local_storage_dir, f"train_data_step_{self.training_steps}.csv"))
