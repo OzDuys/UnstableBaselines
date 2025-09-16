@@ -169,7 +169,8 @@ def run_game(game_spec: GameSpec, actor: VLLMActor):
 @ray.remote
 class Collector:
     def __init__(self, vllm_config, tracker, buffer, game_scheduler):
-        self.logger = setup_logger("collector", ray.get(tracker.get_log_dir.remote()))
+        # Disable console logs from Collector actor to avoid duplication across Ray workers
+        self.logger = setup_logger("collector", ray.get(tracker.get_log_dir.remote()), to_console=False)
         self.tracker, self.buffer, self.game_scheduler = tracker, buffer, game_scheduler
         # self.actors = [VLLMActor.options(num_gpus=1).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-{i}") for i in range(int(ray.available_resources().get("GPU", 0))-1)]
         self.actors = [VLLMActor.options(num_gpus=1).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-{i}") for i in range(int(ray.available_resources().get("GPU", 0)))]
@@ -189,12 +190,19 @@ class Collector:
         self._task_errors = 0
         self._launch_exceptions = 0
         self._loop_iter = 0
+        # log throttling
+        self._train_log_every = 50  # log every N train specs
+        self._eval_log_every = 20   # log every N eval specs
+        self._train_log_count = 0
+        self._eval_log_count = 0
     
     def _launch_jobs(self, max_train: int, max_eval: Optional[int]):
         while self._num_running("train") < max_train: # submit new train game
             try:
                 game_spec: GameSpec = ray.get(self.game_scheduler.next_train_job.remote()) # sample game spec
-                self.logger.info(f"received train game_spec: {game_spec}")
+                self._train_log_count += 1
+                if self._train_log_count == 1 or (self._train_log_count % self._train_log_every == 0):
+                    self.logger.info(f"received train game_spec (count={self._train_log_count}): {game_spec}")
                 actor: VLLMActor = next(self._actor_iter) # get actor
                 ref = run_game.remote(game_spec, actor)
                 self.flight[ref] = TaskMeta("train", game_spec.env_id)
@@ -220,7 +228,9 @@ class Collector:
         while max_eval!=None and self._num_running("eval") < max_eval:
             try:
                 game_spec: GameSpec = ray.get(self.game_scheduler.next_eval_job.remote())
-                self.logger.info(f"received eval game_spec: {game_spec}")
+                self._eval_log_count += 1
+                if self._eval_log_count == 1 or (self._eval_log_count % self._eval_log_every == 0):
+                    self.logger.info(f"received eval game_spec (count={self._eval_log_count}): {game_spec}")
                 actor: VLLMActor = next(self._actor_iter) # get actor
                 ref = run_game.remote(game_spec, actor)
                 self.flight[ref] = TaskMeta("eval", game_spec.env_id)
@@ -330,7 +340,9 @@ class Collector:
     def collect(self, num_train_workers: int, num_eval_workers: Optional[int]=None):
         self.logger.info("entered collect func")
         while ray.get(self.buffer.continue_collection.remote()):
-            self.logger.info("entered colelct loop")
+            # Rate-limit noisy loop log
+            if self._loop_iter == 0 or (self._loop_iter % 50 == 0):
+                self.logger.info("collector loop heartbeat")
             self._loop_iter += 1
             try:
                 self.tracker.log_collector.remote({

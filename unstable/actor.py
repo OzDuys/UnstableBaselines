@@ -12,7 +12,10 @@ from unstable.utils.logging import setup_logger
 @ray.remote
 class VLLMActor:
     def __init__(self, cfg: Dict[str, Any], tracker, name: str):
-        self.logger = setup_logger(f"actor-{name}", ray.get(tracker.get_log_dir.remote()))
+        # Disable console logging inside Ray actor to avoid duplicated logs across processes.
+        self.logger = setup_logger(
+            f"actor-{name}", ray.get(tracker.get_log_dir.remote()), to_console=False
+        )
         # Let Ray handle GPU isolation. Do NOT override CUDA_VISIBLE_DEVICES here.
         # Overriding with ray.get_gpu_ids() can remap to physical GPU 0 for all actors.
         self.gpu_ids = ray.get_gpu_ids()
