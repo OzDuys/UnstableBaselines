@@ -173,25 +173,37 @@ class Collector:
         # Disable console logs from Collector actor to avoid duplication across Ray workers
         self.logger = setup_logger("collector", ray.get(tracker.get_log_dir.remote()), to_console=False)
         self.tracker, self.buffer, self.game_scheduler = tracker, buffer, game_scheduler
-        # Create a single vLLM actor that spans tensor_parallel_size GPUs to avoid multi-engine contention
+        # Create vLLM actors
+        # If tp > 1, create a single actor reserving `tp` GPUs (tensor-parallel engine)
+        # If tp == 1, allow replication across multiple GPUs by creating N actors with num_gpus=1
         try:
             tp = int(vllm_config.get("tensor_parallel_size", 1))
         except Exception:
             tp = 1
-        # Reserve exactly `tp` GPUs for the engine; run a single shared actor for all games
-        self.actors = [VLLMActor.options(num_gpus=tp, max_concurrency=256).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-TP{tp}")]
+        num_vllm_actors = int(vllm_config.get("num_vllm_actors", 1)) if tp == 1 else 1
+        if tp > 1:
+            # Single multi-GPU engine via tensor parallel
+            self.actors = [VLLMActor.options(num_gpus=tp, max_concurrency=256).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-TP{tp}")]
+        else:
+            # Multiple single-GPU engines (replication) to use multiple GPUs without TP
+            self.actors = [
+                VLLMActor.options(num_gpus=1, max_concurrency=256).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-Replica-{i}")
+                for i in range(num_vllm_actors)
+            ]
         self._actor_iter = itertools.cycle(self.actors)
 
         # Warm up vLLM with a tiny prompt to ensure engine is responsive
         try:
-            _ = ray.get(self.actors[0].submit_prompt.remote(prompt="Hello", lora_path=None, max_tokens_override=4), timeout=60)
+            # Warm up all actors with a tiny prompt to ensure engines are responsive
+            for idx, a in enumerate(self.actors):
+                _ = ray.get(a.submit_prompt.remote(prompt="Hello", lora_path=None, max_tokens_override=4), timeout=60)
             try:
-                self.tracker.log_collector.remote({"vllm_warmup_ok": 1})
+                self.tracker.log_collector.remote({"vllm_warmup_ok": 1, "vllm_actor_count": len(self.actors)})
             except Exception:
                 pass
         except Exception as e:
             try:
-                self.tracker.log_collector.remote({"vllm_warmup_ok": 0, "vllm_warmup_error": str(e)})
+                self.tracker.log_collector.remote({"vllm_warmup_ok": 0, "vllm_warmup_error": str(e), "vllm_actor_count": len(self.actors)})
             except Exception:
                 pass
 

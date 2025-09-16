@@ -39,6 +39,8 @@ class VLLMActor:
         if "model_name" in engine_args_dict and "model" not in engine_args_dict:
             self.logger.info(f"Mapping legacy parameter 'model_name' ({engine_args_dict['model_name']}) to 'model'.")
             engine_args_dict["model"] = engine_args_dict.pop("model_name")
+        # Remove custom keys not understood by EngineArgs (used by Collector scheduling)
+        engine_args_dict.pop("num_vllm_actors", None)
         # Clamp max_num_seqs to a safer bound to reduce init-time memory pressure
         if "max_num_seqs" in engine_args_dict:
             original = int(engine_args_dict["max_num_seqs"])
