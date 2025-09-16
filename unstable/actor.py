@@ -13,8 +13,15 @@ from unstable.utils.logging import setup_logger
 class VLLMActor:
     def __init__(self, cfg: Dict[str, Any], tracker, name: str):
         self.logger = setup_logger(f"actor-{name}", ray.get(tracker.get_log_dir.remote()))
+        # Let Ray handle GPU isolation. Do NOT override CUDA_VISIBLE_DEVICES here.
+        # Overriding with ray.get_gpu_ids() can remap to physical GPU 0 for all actors.
         self.gpu_ids = ray.get_gpu_ids()
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, self.gpu_ids))
+        try:
+            self.logger.info(
+                f"Actor {name} assigned GPU ids (ray.get_gpu_ids): {self.gpu_ids}; CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}"
+            )
+        except Exception:
+            pass
         
         # --- START: REVISED ENGINEARGS INITIALIZATION ---
 
@@ -32,10 +39,20 @@ class VLLMActor:
         # Clamp max_num_seqs to a safer bound to reduce init-time memory pressure
         if "max_num_seqs" in engine_args_dict:
             original = int(engine_args_dict["max_num_seqs"])
-            clamped = max(1, min(original, 64))
+            clamped = max(1, min(original, 32))
             if clamped != original:
                 self.logger.info(f"Clamping max_num_seqs from {original} to {clamped} to reduce startup memory.")
                 engine_args_dict["max_num_seqs"] = clamped
+        else:
+            # Provide a conservative default if not set
+            engine_args_dict["max_num_seqs"] = 16
+
+        # Provide safe defaults for stability unless explicitly configured
+        engine_args_dict.setdefault("tensor_parallel_size", 1)
+        engine_args_dict.setdefault("gpu_memory_utilization", 0.85)
+        engine_args_dict.setdefault("trust_remote_code", True)
+        # Prefer bf16 on modern GPUs; fall back to auto if it errors at runtime
+        engine_args_dict.setdefault("dtype", "bfloat16")
         
         # 3. Extract parameters that are NOT part of EngineArgs
         # These are used for SamplingParams later, not engine creation.
