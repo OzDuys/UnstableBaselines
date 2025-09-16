@@ -69,8 +69,60 @@ class Tracker(BaseTracker):
             except Exception as e:
                 self.logger.warning(f"wandb.config.update failed: {e}")
 
-    def _put(self, k: str, v: Scalar): self._m[k].append(v)
-    def _agg(self, p: str) -> dict[str, Scalar]: return {k: float(np.mean(dq)) for k, dq in self._m.items() if k.startswith(p)}
+    def _coerce_scalar(self, key: str, v) -> Optional[float]:
+        """Best-effort conversion to a numeric scalar suitable for aggregation.
+
+        Rules:
+        - numeric (int/float/bool/np.number): return as float
+        - numpy arrays: mean if numeric dtype, else skip
+        - containers (list/tuple/set/dict): log their length
+        - strings: try numeric parse, else skip
+        - others: skip
+        """
+        try:
+            # Fast path for plain numerics
+            if isinstance(v, (bool, int, float, np.integer, np.floating)):
+                return float(v)
+            # numpy arrays
+            if isinstance(v, np.ndarray):
+                if np.issubdtype(v.dtype, np.number) and v.size > 0:
+                    return float(np.mean(v))
+                return float(v.size)
+            # containers -> count
+            if isinstance(v, (list, tuple, set, dict)):
+                return float(len(v))
+            # strings: try numeric cast
+            if isinstance(v, str):
+                # Allow plain numeric strings (int/float)
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+        except Exception:
+            return None
+        return None
+
+    def _put(self, k: str, v: Scalar):
+        sv = self._coerce_scalar(k, v)
+        if sv is not None:
+            self._m[k].append(sv)
+        else:
+            # Silently ignore non-numeric metrics to keep logging robust
+            pass
+
+    def _agg(self, p: str) -> dict[str, Scalar]:
+        out = {}
+        for k, dq in self._m.items():
+            if not k.startswith(p):
+                continue
+            if len(dq) == 0:
+                continue
+            try:
+                out[k] = float(np.mean(dq))
+            except Exception:
+                # Skip keys that somehow accumulated non-numeric values
+                continue
+        return out
     def _flush_if_due(self):
         if time.monotonic()-self._last_flush >= self.FLUSH_EVERY:
             if self._buffer and self.use_wandb:
@@ -254,10 +306,15 @@ class Tracker(BaseTracker):
     
     def log_learner(self, info: dict):
         try:
-            self._m.update({f"learner/{k}": v for k, v in info.items()})
+            for k, v in (info or {}).items():
+                self._put(f"learner/{k}", v)
             self._buffer.update(self._agg("learner")); self._flush_if_due()
         except Exception as exc:
             self.logger.info(f"Exception in log_learner: {exc}")
+
+    # Backwards-compatibility alias (older code called 'log_lerner')
+    def log_lerner(self, info_dict: Dict):
+        return self.log_learner(info_dict)
 
     def get_interface_info(self): 
         for inf_key in ["Game Length", "Format Success Rate - correct_answer_format", "Format Success Rate - invalid_move"]: 

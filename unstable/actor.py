@@ -88,8 +88,21 @@ class VLLMActor:
             self.engine = LLMEngine.from_engine_args(engine_args)
             self.logger.info("VLLM engine initialized successfully")
         except Exception as e:
-            self.logger.error(f"VLLM engine initialization failed: {e}")
-            raise
+            # Try to detect tensor-parallel mismatch and retry with a safe value
+            msg = str(e)
+            if "attention heads" in msg and "tensor parallel" in msg:
+                try:
+                    self.logger.warning(f"Tensor-parallel mismatch detected ({msg}). Falling back to tensor_parallel_size=1 and retrying.")
+                    engine_args_dict["tensor_parallel_size"] = 1
+                    engine_args = EngineArgs(**engine_args_dict)
+                    self.engine = LLMEngine.from_engine_args(engine_args)
+                    self.logger.info("VLLM engine initialized successfully after TP fallback=1")
+                except Exception as e2:
+                    self.logger.error(f"VLLM engine initialization retry failed: {e2}")
+                    raise
+            else:
+                self.logger.error(f"VLLM engine initialization failed: {e}")
+                raise
 
         # --- END: REVISED ENGINEARGS INITIALIZATION ---
 
