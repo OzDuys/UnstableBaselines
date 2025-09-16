@@ -16,7 +16,7 @@ class REINFORCELearner(BaseLearner):
             try:
                 name = self.kl_ref_model_name or self.model_name
                 # Load a frozen reference policy on the same device (optional: could be moved to CPU, but slower)
-                self.ref_model = AutoModelForCausalLM.from_pretrained(name, trust_remote_code=True, torch_dtype=torch.bfloat16).to(self.device)
+                self.ref_model = AutoModelForCausalLM.from_pretrained(name, trust_remote_code=True, dtype=torch.bfloat16).to(self.device)
                 for p in self.ref_model.parameters():
                     p.requires_grad_(False)
                 self.ref_model.eval()

@@ -24,19 +24,19 @@ def build_critic_cls(base_cls, base_pretrain_cls, value_head_prefix):
             else:               return values
     return CriticModel
 
-def get_critic_model(pretrain_or_model: str, device: torch.device, torch_dtype, use_flash_attention_2: bool=False, value_head_prefix: str="value_head"):
+def get_critic_model(pretrain_or_model: str, device: torch.device, dtype, use_flash_attention_2: bool=False, value_head_prefix: str="value_head"):
     config = AutoConfig.from_pretrained(pretrain_or_model, trust_remote_code=True)
     config._attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
     base_class = AutoModel._model_mapping[type(config)]
     critic_cls = build_critic_cls(base_class, base_class.__base__, value_head_prefix)
-    model = critic_cls.from_pretrained(pretrain_or_model, config=config, trust_remote_code=True, torch_dtype=torch_dtype, device_map=device)
+    model = critic_cls.from_pretrained(pretrain_or_model, config=config, trust_remote_code=True, dtype=dtype, device_map=device)
     value_head = getattr(model, value_head_prefix)
     value_head.weight.data.normal_(mean=0.0, std=1 / (config.hidden_size + 1))
     return model
 
 def _load_base(name: str, dtype, device, **kwargs): 
     with torch.device(device): 
-        return AutoModelForCausalLM.from_pretrained(name, torch_dtype=dtype, trust_remote_code=True, **kwargs)
+        return AutoModelForCausalLM.from_pretrained(name, dtype=dtype, trust_remote_code=True, **kwargs)
 
 def _freeze(model, ignore_substr: Optional[str] = None):
     for n, p in model.named_parameters():
@@ -51,7 +51,7 @@ def _build_lora(model, lora_cfg: Dict[str, Any], task_type: str):
 
 def build_peft_model(base_name: str, device: torch.device, lora_cfg: Dict[str, Any]|None, initial_lora_path: Optional[str]=None, freeze_base: bool=True, critic_model: bool=False, value_head_prefix: str="value_head") -> Tuple[torch.nn.Module, "transformers.PreTrainedTokenizer"]:
     task_type = "TOKEN_CLS" if critic_model else "CAUSAL_LM"
-    base = get_critic_model(base_name, device, torch_dtype=torch.bfloat16, value_head_prefix=value_head_prefix) if critic_model else _load_base(base_name, torch.bfloat16, device)
+    base = get_critic_model(base_name, device, dtype=torch.bfloat16, value_head_prefix=value_head_prefix) if critic_model else _load_base(base_name, torch.bfloat16, device)
     if freeze_base: _freeze(base, None if not critic_model else value_head_prefix)
     model = _build_lora(base, lora_cfg or {}, task_type).to(device)
     if initial_lora_path: _load_lora_state(model, initial_lora_path)
