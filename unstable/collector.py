@@ -33,6 +33,7 @@ class CallableActorWrapper:
         lower = (observation or "").lower()
         is_convo = ("converse freely" in lower) or ("free-chat" in lower) or ("free chat" in lower)
         max_override = self._conv_max if (self._conv_max is not None and is_convo) else None
+        # Submit to shared vLLM actor; allow queuing/batching on the actor side
         raw = ray.get(self._actor.submit_prompt.remote(prompt=prompt, lora_path=self._lora, max_tokens_override=max_override))
         extracted, format_feedback = self._extract(raw_action=raw)
         return raw, extracted, prompt, format_feedback
@@ -172,9 +173,27 @@ class Collector:
         # Disable console logs from Collector actor to avoid duplication across Ray workers
         self.logger = setup_logger("collector", ray.get(tracker.get_log_dir.remote()), to_console=False)
         self.tracker, self.buffer, self.game_scheduler = tracker, buffer, game_scheduler
-        # self.actors = [VLLMActor.options(num_gpus=1).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-{i}") for i in range(int(ray.available_resources().get("GPU", 0))-1)]
-        self.actors = [VLLMActor.options(num_gpus=1).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-{i}") for i in range(int(ray.available_resources().get("GPU", 0)))]
+        # Create a single vLLM actor that spans tensor_parallel_size GPUs to avoid multi-engine contention
+        try:
+            tp = int(vllm_config.get("tensor_parallel_size", 1))
+        except Exception:
+            tp = 1
+        # Reserve exactly `tp` GPUs for the engine; run a single shared actor for all games
+        self.actors = [VLLMActor.options(num_gpus=tp, max_concurrency=256).remote(cfg=vllm_config, tracker=tracker, name=f"Actor-TP{tp}")]
         self._actor_iter = itertools.cycle(self.actors)
+
+        # Warm up vLLM with a tiny prompt to ensure engine is responsive
+        try:
+            _ = ray.get(self.actors[0].submit_prompt.remote(prompt="Hello", lora_path=None, max_tokens_override=4), timeout=60)
+            try:
+                self.tracker.log_collector.remote({"vllm_warmup_ok": 1})
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.tracker.log_collector.remote({"vllm_warmup_ok": 0, "vllm_warmup_error": str(e)})
+            except Exception:
+                pass
 
         # thead keeping
         self.flight: Dict[ray.ObjectRef, TaskMeta] = {}
